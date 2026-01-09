@@ -18,7 +18,7 @@ import time
 
 # Try importing the Cython extension
 try:
-    from ._sgd_mds_cython import run_sgd_epoch
+    from ._sgd_mds_cython import run_sgd_epoch, run_sgd_epoch_lazy, run_sgd_epoch_lazy_random_native
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -206,19 +206,20 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         "tol": [Interval(Real, 0, None, closed="left")],
         "learning_rate_init": [Interval(Real, 0, None, closed="left"), StrOptions({"auto"})],
         "batch_size": [Interval(Integral, 1, None, closed="left"), None],
-        "dissimilarity": [StrOptions({"euclidean", "precomputed"})],
+        "dissimilarity": [StrOptions({"euclidean", "precomputed", "lazy"})],
         "n_jobs": [Integral, None],
         "random_state": ["random_state"],
         "algorithm": [StrOptions({"mini_batch", "true_sgd"})],
         "scheduler": [StrOptions({"exponential", "harmonic", "convergent", "cosine", "sine", "constant", "hybrid"})],
-        "weighting": [StrOptions({"uniform", "inverse"})]
+        "weighting": [StrOptions({"uniform", "inverse"})],
+        "sampling_strategy": [StrOptions({"cycle", "random"})],
     }
 
     def __init__(self, n_components=2, *, metric=True, n_init=1,
                  max_iter=300, tol=1e-4, learning_rate_init="auto",
                  batch_size=None, dissimilarity="euclidean",
                  algorithm="mini_batch", scheduler="exponential", weighting="uniform",
-                 n_jobs=None, random_state=None):
+                 sampling_strategy="cycle", n_jobs=None, random_state=None):
         self.n_components = n_components
         self.metric = metric
         self.n_init = n_init
@@ -230,6 +231,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         self.algorithm = algorithm
         self.scheduler = scheduler
         self.weighting = weighting
+        self.sampling_strategy = sampling_strategy
         self.n_jobs = n_jobs
         self.random_state = random_state
 
@@ -253,15 +255,30 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         """
         self._validate_params()
 
+        # 1. PRECOMPUTED: User provides the matrix
         if self.dissimilarity == "precomputed":
-            self.dissimilarity_matrix_ = check_array(X, accept_sparse=False, ensure_2d=True)
+            self.dissimilarity_matrix_ = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
             if self.dissimilarity_matrix_.shape[0] != self.dissimilarity_matrix_.shape[1]:
                 raise ValueError("Precomputed dissimilarity matrix must be square.")
             check_symmetric(self.dissimilarity_matrix_, raise_exception=True)
-        elif self.dissimilarity == "euclidean":
-            X = check_array(X, accept_sparse=False, ensure_2d=True)
-            self.dissimilarity_matrix_ = euclidean_distances(X, X)
+            
+            solver_input = self.dissimilarity_matrix_
 
+        # 2. EUCLIDEAN: User provides features, we precalculate matrix
+        elif self.dissimilarity == "euclidean":
+            X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+            # Store full matrix (O(N^2) memory)
+            self.dissimilarity_matrix_ = euclidean_distances(X, X)
+            
+            solver_input = self.dissimilarity_matrix_
+
+        # 3. LAZY: User provides features, we use them raw (Scalable for N > 10k)
+        elif self.dissimilarity == "lazy":
+            X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+            self.dissimilarity_matrix_ = None 
+            
+            solver_input = X
+        
         self.n_features_in_ = X.shape[1]
 
         best_stress = np.inf
@@ -275,9 +292,9 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             run_seed = rng.randint(np.iinfo(np.int32).max)
             
             if self.algorithm == "true_sgd":
-                embedding, stress, n_iter, history = self._solve_true_sgd(self.dissimilarity_matrix_, run_seed, n_epochs=self.max_iter)
+                embedding, stress, n_iter, history = self._solve_true_sgd(solver_input, run_seed, n_epochs=self.max_iter)
             else:
-                embedding, stress, n_iter, history = self._solve_sgd(self.dissimilarity_matrix_, run_seed)
+                embedding, stress, n_iter, history = self._solve_sgd(solver_input, run_seed)
 
             if stress < best_stress:
                 best_stress = stress
@@ -342,6 +359,36 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         w_min = 1.0 / (d_max ** 2)
 
         return w_min, w_max, floor_val
+    
+    def _estimate_weight_bounds(self, X, all_pairs, rng, n_samples_est=1000):
+        """
+        Estimate min/max distances for learning rate initialization 
+        without computing the full matrix (O(N) instead of O(N^2)).
+        """
+        if self.weighting == "uniform":
+            return 1.0, 1.0
+            
+        n_pairs = all_pairs.shape[0]
+        # Sample random pairs to estimate bounds
+        indices = rng.choice(n_pairs, size=min(n_pairs, n_samples_est), replace=False)
+        sample_pairs = all_pairs[indices]
+        
+        X_i = X[sample_pairs[:, 0]]
+        X_j = X[sample_pairs[:, 1]]
+        
+        dists = np.linalg.norm(X_i - X_j, axis=1)
+        dists = dists[dists > 1e-9]
+        
+        if dists.size == 0:
+             return 1.0, 1.0 
+           
+        d_min = np.min(dists)
+        d_max = np.max(dists)
+
+        w_max = 1.0 / (d_min ** 2)
+        w_min = 1.0 / (d_max ** 2)
+        
+        return w_min, w_max
     
     def _compute_full_stress(self, embedding, dissimilarity_matrix):
         dis = euclidean_distances(embedding, embedding)
@@ -431,32 +478,58 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         return embedding, stress, it + 1, history
     
     
-    def _solve_true_sgd(self, dissimilarity_matrix, random_state, n_epochs=15):
+    def _solve_true_sgd(self, X, random_state, n_epochs=15):
         """
-        Implements true SGD using Cython if available.
-        Performs N_EPOCHS passes over ALL pairs.
+        Implements true SGD using Cython.
+        Supports both Precomputed Matrix (O(N^2) RAM) and Lazy Calculation (O(N) RAM).
         """
         if not HAS_CYTHON:
             raise RuntimeError("Cython extension not compiled. Cannot run True SGD fast.")
 
         rng = check_random_state(random_state)
-        n_samples = dissimilarity_matrix.shape[0]
+        n_samples = X.shape[0]
+        n_pairs = (n_samples * (n_samples - 1)) // 2
         
         embedding = rng.standard_normal(size=(n_samples, self.n_components))
         embedding = np.ascontiguousarray(embedding, dtype=np.float64)
 
-        rows, cols = np.triu_indices(n_samples, k=1)
-        
-        all_pairs = np.column_stack((rows, cols)).astype(np.int32)
-        flat_distances = dissimilarity_matrix[rows, cols].astype(np.float64)
-        
-        w_min, w_max, d_floor = self._compute_weight_bounds(dissimilarity_matrix)
-
-        if self.weighting == "inverse":
-            clipped_d = np.maximum(flat_distances, d_floor)
-            flat_weights = 1.0 / (clipped_d ** 2)
+        if self.sampling_strategy == "cycle":
+            rows, cols = np.triu_indices(n_samples, k=1)
+            all_pairs = np.column_stack((rows, cols)).astype(np.int32)
         else:
-            flat_weights = np.ones(all_pairs.shape[0], dtype=np.float64)
+            all_pairs = None
+        
+        if self.dissimilarity in ["precomputed", "euclidean"]:
+            if self.sampling_strategy == "random":
+                raise ValueError("sampling_strategy='random' is not supported with precomputed/euclidean "
+                                 "dissimilarity because random access to weights/distances is inefficient. "
+                                 "Use dissimilarity='lazy'.")
+            
+            flat_distances = X[rows, cols].astype(np.float64)
+            w_min, w_max, d_floor = self._compute_weight_bounds(X)
+
+            if self.weighting == "inverse":
+                clipped_d = np.maximum(flat_distances, d_floor)
+                flat_weights = 1.0 / (clipped_d ** 2)
+            else:
+                flat_weights = np.ones(all_pairs.shape[0], dtype=np.float64)
+            
+            is_lazy = False
+
+        else: # self.dissimilarity == "lazy"
+            if all_pairs is None:
+                dummy_rows = rng.randint(0, n_samples, size=1000)
+                dummy_cols = rng.randint(0, n_samples, size=1000)
+                mask = dummy_rows != dummy_cols # Filter out i=j
+                sample_pairs = np.column_stack((dummy_rows[mask], dummy_cols[mask])).astype(np.int32)
+            else:
+                sample_pairs = all_pairs
+            
+            w_min, w_max = self._estimate_weight_bounds(X, sample_pairs, rng)
+            
+            flat_distances = None
+            flat_weights = None
+            is_lazy = True
 
         if self.learning_rate_init == "auto":
             lr_init = 1.0 / w_min
@@ -467,25 +540,66 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
 
         history = []
         cumulative_time = 0.0
-        current_stress = self._compute_full_stress(embedding, dissimilarity_matrix)
-        history.append((0.0, current_stress))
+        
+        def safe_compute_stress():
+            if n_samples > 20000:
+                return -1.0
+            
+            if is_lazy:
+                D_temp = euclidean_distances(X, X)
+                return self._compute_full_stress(embedding, D_temp)
+            else:
+                return self._compute_full_stress(embedding, X)
+
+        # Use the helper
+        # current_stress = safe_compute_stress()
+        # history.append((0.0, current_stress))
         
         for epoch in range(n_epochs):
             t0 = time.time()
-
-            all_pairs, flat_distances, flat_weights = sklearn_shuffle(all_pairs, flat_distances, flat_weights, random_state=rng)
-            
             lr = scheduler.get_rate(epoch)
-            
-            run_sgd_epoch(embedding, flat_distances, flat_weights, all_pairs, lr)
+
+            if not is_lazy:
+                # Standard Mode: We must shuffle strict alignment of pairs, distances, and weights.
+                all_pairs, flat_distances, flat_weights = sklearn_shuffle(
+                    all_pairs, flat_distances, flat_weights, random_state=rng
+                )
+                
+                run_sgd_epoch(
+                    embedding, 
+                    flat_distances, 
+                    flat_weights, 
+                    all_pairs, 
+                    lr
+                )
+
+            else:
+                # We don't generate arrays in Python. We pass the count.
+                # This achieves O(1) auxiliary memory usage.
+                
+                # Pass a fresh seed every epoch for the C-level RNG
+                current_seed = rng.randint(0, 2**30)
+                
+                run_sgd_epoch_lazy_random_native(
+                    embedding,
+                    X,
+                    n_pairs,
+                    lr,
+                    self.weighting,
+                    current_seed
+                )
 
             t1 = time.time()
             cumulative_time += t1 - t0
 
-            current_stress = self._compute_full_stress(embedding, dissimilarity_matrix)
-            history.append((cumulative_time, current_stress))
+            # Logging (skip if unsafe)
+            # if n_samples < 20000:
+            #   current_stress = safe_compute_stress()
+            #   history.append((cumulative_time, current_stress))
         
         embedding -= np.mean(embedding, axis=0)
-        stress = self._compute_full_stress(embedding, dissimilarity_matrix)
         
+        # stress = safe_compute_stress()
+        stress = -1.0
+
         return embedding, stress, n_epochs, history
