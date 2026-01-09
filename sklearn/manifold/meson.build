@@ -12,3 +12,12 @@ py.extension_module(
   subdir: 'sklearn/manifold',
   install: true
 )
+
+py.extension_module(
+  '_sgd_mds_cython',
+  sources: ['_sgd_mds_cython.pyx'],
+  dependencies: [np_dep],
+  cython_args: cython_args,
+  subdir: 'sklearn/manifold',
+  install: true
+)

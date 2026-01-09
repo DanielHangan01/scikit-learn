@@ -1,6 +1,7 @@
 #cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
-from libc.math cimport sqrt
+from libc.math cimport sqrt, pow
+from libc.stdlib cimport rand, RAND_MAX
 import numpy as np
 cimport numpy as cn
 
@@ -61,3 +62,62 @@ def run_sgd_epoch(
                 embedding[j, d] += ratio * diff_val
 
     return np.asarray(embedding)
+
+def run_sgd_epoch_lazy_random_native(
+    double[:, ::1] embedding,      # Modified in-place
+    double[:, ::1] X_original,     # Read-only features
+    long n_updates,                # Number of updates to perform (e.g. n_pairs)
+    double lr,
+    str weighting_type,
+    int seed                       # Seed for C-level rand (optional, or use Python seed)
+):
+    cdef:
+        int k, i, j, f, d
+        int n_samples = X_original.shape[0]
+        int n_features = X_original.shape[1]
+        int n_components = embedding.shape[1]
+        
+        double delta, dist, w, ratio, step_val
+        double diff, grad
+        double[10] diff_vector  # Buffer for component diffs (assuming low dim)
+
+    # Note: For strict reproducibility, proper LCG needed
+    # or PCG random generator here using 'seed'
+    
+    for k in range(n_updates):
+        i = rand() % n_samples
+        j = rand() % n_samples
+        
+        if i == j: 
+            continue
+            
+        delta = 0.0
+        for f in range(n_features):
+            diff = X_original[i, f] - X_original[j, f]
+            delta += diff * diff
+        delta = sqrt(delta)
+        
+        if weighting_type == "inverse":
+            if delta < 1e-6: delta = 1e-6
+            w = 1.0 / (delta * delta)
+        else:
+            w = 1.0
+
+        dist = 0.0
+        for d in range(n_components):
+            diff = embedding[i, d] - embedding[j, d]
+            diff_vector[d] = diff
+            dist += diff * diff
+        dist = sqrt(dist)
+        
+        step_val = w * lr
+        if step_val > 1.0: step_val = 1.0
+        
+        if dist < 1e-9: dist = 1e-9
+        
+        ratio = step_val * (dist - delta) / (2.0 * dist)
+        
+        for d in range(n_components):
+            grad = ratio * diff_vector[d]
+            embedding[i, d] -= grad
+            embedding[j, d] += grad
