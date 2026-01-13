@@ -1,13 +1,20 @@
 #cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
-from libc.math cimport sqrt, pow
-from libc.stdlib cimport rand, RAND_MAX
-import numpy as np
+from libc.math cimport sqrt
+from libc.stdlib cimport malloc, free
 cimport numpy as cn
 
 cn.import_array()
 
-def run_sgd_epoch(
+cdef inline cn.uint32_t xorshift32(cn.uint32_t* state) nogil:
+    cdef cn.uint32_t x = state[0]
+    x ^= (x << 13)
+    x ^= (x >> 17)
+    x ^= (x << 5)
+    state[0] = x
+    return x
+
+cpdef void run_sgd_epoch(
     double[:, ::1] embedding,      # Shape (n_samples, n_components)
     double[::1] target_distances,  # Shape (n_pairs) - PRE-EXTRACTED
     double[::1] weights,           # Shape (n_pairs) - PRE-CALCULATED
@@ -61,63 +68,77 @@ def run_sgd_epoch(
                 embedding[i, d] -= ratio * diff_val
                 embedding[j, d] += ratio * diff_val
 
-    return np.asarray(embedding)
 
-def run_sgd_epoch_lazy_random_native(
+cpdef void run_sgd_epoch_lazy_random_native(
     double[:, ::1] embedding,      # Modified in-place
     double[:, ::1] X_original,     # Read-only features
     long n_updates,                # Number of updates to perform (e.g. n_pairs)
     double lr,
-    str weighting_type,
-    int seed                       # Seed for C-level rand (optional, or use Python seed)
+    int weighting_code,            # 1 => inverse, 0 => uniform
+    cn.uint32_t seed               # RNG seed
 ):
     cdef:
-        int k, i, j, f, d
+        long k
+        int i, j, f, d
         int n_samples = X_original.shape[0]
         int n_features = X_original.shape[1]
         int n_components = embedding.shape[1]
         
         double delta, dist, w, ratio, step_val
         double diff, grad
-        double[10] diff_vector  # Buffer for component diffs (assuming low dim)
 
-    # Note: For strict reproducibility, proper LCG needed
-    # or PCG random generator here using 'seed'
+        cn.uint32_t rng_state = seed if seed != 0 else 1
+        double* diff_vector = <double*> malloc(n_components * sizeof(double))
+
+    if diff_vector == NULL:
+        raise MemoryError("Failed to allocate diff_vector")
     
-    for k in range(n_updates):
-        i = rand() % n_samples
-        j = rand() % n_samples
-        
-        if i == j: 
-            continue
-            
-        delta = 0.0
-        for f in range(n_features):
-            diff = X_original[i, f] - X_original[j, f]
-            delta += diff * diff
-        delta = sqrt(delta)
-        
-        if weighting_type == "inverse":
-            if delta < 1e-6: delta = 1e-6
-            w = 1.0 / (delta * delta)
-        else:
-            w = 1.0
+    try:
+        with nogil:
+            for k in range(n_updates):
+                # Fast RNG-based sampling
+                i = <int>(xorshift32(&rng_state) % n_samples)
+                j = <int>(xorshift32(&rng_state) % n_samples)
+                if i == j:
+                    continue
+                
+                # Compute raw dissimilarity delta in feature space
+                delta = 0.0
+                for f in range(n_features):
+                    diff = X_original[i, f] - X_original[j, f]
+                    delta += diff * diff
+                delta = sqrt(delta)
+                
+                if weighting_code == 1:
+                    if delta < 1e-6:
+                        delta = 1e-6
+                    w = 1.0 / (delta * delta)
+                else:
+                    w = 1.0
 
-        dist = 0.0
-        for d in range(n_components):
-            diff = embedding[i, d] - embedding[j, d]
-            diff_vector[d] = diff
-            dist += diff * diff
-        dist = sqrt(dist)
-        
-        step_val = w * lr
-        if step_val > 1.0: step_val = 1.0
-        
-        if dist < 1e-9: dist = 1e-9
-        
-        ratio = step_val * (dist - delta) / (2.0 * dist)
-        
-        for d in range(n_components):
-            grad = ratio * diff_vector[d]
-            embedding[i, d] -= grad
-            embedding[j, d] += grad
+                # Compute embedding distance + store diffs
+                dist = 0.0
+                for d in range(n_components):
+                    diff = embedding[i, d] - embedding[j, d]
+                    diff_vector[d] = diff
+                    dist += diff * diff
+                dist = sqrt(dist)
+
+                if dist < 1e-12:
+                    continue
+                
+                # Step size with cap
+                step_val = w * lr
+                if step_val > 1.0:
+                    step_val = 1.0
+                
+                ratio = step_val * (dist - delta) / (2.0 * dist)
+                
+                # Apply update
+                for d in range(n_components):
+                    grad = ratio * diff_vector[d]
+                    embedding[i, d] -= grad
+                    embedding[j, d] += grad
+
+    finally:
+        free(diff_vector)
