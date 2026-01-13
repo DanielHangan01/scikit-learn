@@ -16,9 +16,8 @@ from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.utils.validation import check_symmetric
 import time
 
-# Try importing the Cython extension
 try:
-    from ._sgd_mds_cython import run_sgd_epoch, run_sgd_epoch_lazy, run_sgd_epoch_lazy_random_native
+    from ._sgd_mds_cython import run_sgd_epoch, run_sgd_epoch_lazy_random_native
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -554,6 +553,11 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         # Use the helper
         # current_stress = safe_compute_stress()
         # history.append((0.0, current_stress))
+
+        if self.weighting == "inverse":
+            weighting_code = 1
+        else:
+            weighting_code = 0
         
         for epoch in range(n_epochs):
             t0 = time.time()
@@ -578,14 +582,14 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                 # This achieves O(1) auxiliary memory usage.
                 
                 # Pass a fresh seed every epoch for the C-level RNG
-                current_seed = rng.randint(0, 2**30)
+                current_seed = rng.randint(1, 2**31 - 1)
                 
                 run_sgd_epoch_lazy_random_native(
                     embedding,
                     X,
                     n_pairs,
                     lr,
-                    self.weighting,
+                    weighting_code,
                     current_seed
                 )
 
