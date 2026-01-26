@@ -2,7 +2,7 @@
 Stochastic Gradient Descent Multidimensional Scaling (SGD-MDS)
 """
 # Author: Daniel Hangan
-# License: BSD 3 clause
+# SPDX-License-Identifier: BSD-3-Clause
 
 import numpy as np
 from numbers import Integral, Real
@@ -14,6 +14,7 @@ from ..utils._param_validation import Interval, StrOptions
 from sklearn.metrics import euclidean_distances
 from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.utils.validation import check_symmetric
+from sklearn.isotonic import IsotonicRegression
 import time
 
 try:
@@ -63,52 +64,6 @@ class _HarmonicScheduler(_BaseScheduler):
 
     def get_rate(self, t):
         return self.lr_init / (1.0 + self.decay * t)
-    
-class _ConvergentScheduler(_BaseScheduler):
-    def __init__(self, lr_init, w_min, w_max, max_iter, epsilon=0.01, **kwargs):
-        super().__init__(lr_init, w_min, w_max, max_iter, epsilon, **kwargs)
-
-        lr_final = self.epsilon / self.w_max
-
-        if self.lr_init < lr_final:
-            self.decay = 0.0
-        else:
-            self.decay = -np.log(lr_final / self.lr_init) / (self.max_iter - 1)
-        
-        m = self.w_max / self.w_min
-
-        
-        if self.decay == 0 or m <= 1.0000001:
-            self.tau = 0
-        else:
-            self.tau = np.log(m) / self.decay
-        
-    def get_rate(self, t):
-        if t < self.tau:
-            return self.lr_init * np.exp(-self.decay * t)
-        
-        return 1.0 / (self.w_max * (1.0 + self.decay * (t - self.tau)))
-        
-class _CosineScheduler(_BaseScheduler):
-    def __init__(self, lr_init, w_min, w_max, max_iter, epsilon=0.01, **kwargs):
-        super().__init__(lr_init, w_min, w_max, max_iter, epsilon, **kwargs)
-
-        self.eta_max = self.lr_init
-        self.eta_min = self.epsilon / self.w_max
-
-    def get_rate(self, t):
-        if t >= self.max_iter:
-            return self.eta_min
-
-        return self.eta_min + 0.5 * (self.eta_max - self.eta_min) * (1 + np.cos(t / self.max_iter * np.pi))
-    
-class _SineScheduler(_BaseScheduler):
-    def get_rate(self, t):
-        if t >= self.max_iter:
-            return 0.0
-        
-        fraction = (self.max_iter - t) / (4 * self.max_iter)
-        return 2 * self.lr_init * (np.sin(fraction * np.pi) ** 2)
     
 class _HybridScheduler(_BaseScheduler):
     """
@@ -209,7 +164,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         "n_jobs": [Integral, None],
         "random_state": ["random_state"],
         "algorithm": [StrOptions({"mini_batch", "true_sgd"})],
-        "scheduler": [StrOptions({"exponential", "harmonic", "convergent", "cosine", "sine", "constant", "hybrid"})],
+        "scheduler": [StrOptions({"exponential", "harmonic", "constant", "hybrid"})],
         "weighting": [StrOptions({"uniform", "inverse"})],
         "sampling_strategy": [StrOptions({"cycle", "random"})],
     }
@@ -290,10 +245,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         for i in range(self.n_init):
             run_seed = rng.randint(np.iinfo(np.int32).max)
             
-            if self.algorithm == "true_sgd":
-                embedding, stress, n_iter, history = self._solve_true_sgd(solver_input, run_seed, n_epochs=self.max_iter)
-            else:
-                embedding, stress, n_iter, history = self._solve_sgd(solver_input, run_seed)
+            embedding, stress, n_iter, history = self._solve_true_sgd(solver_input, run_seed, n_epochs=self.max_iter)
 
             if stress < best_stress:
                 best_stress = stress
@@ -328,9 +280,6 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             "constant": _ConstantScheduler,
             "exponential": _ExponentialScheduler,
             "harmonic": _HarmonicScheduler,
-            "convergent": _ConvergentScheduler,
-            "cosine": _CosineScheduler,
-            "sine": _SineScheduler,
             "hybrid": _HybridScheduler,
         }
 
@@ -393,89 +342,40 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         dis = euclidean_distances(embedding, embedding)
         stress = 0.5 * np.sum((dis - dissimilarity_matrix) ** 2)
         return stress
-
-    def _solve_sgd(self, dissimilarity_matrix, random_state):
-        """
-        Single run of the SGD optimization loop.
-        """
-        rng = check_random_state(random_state)
-        n_samples = dissimilarity_matrix.shape[0]
-
-        embedding = rng.standard_normal(size=(n_samples, self.n_components))
-
-        w_min, w_max, d_floor = self._compute_weight_bounds(dissimilarity_matrix)
-
-        if self.learning_rate_init == "auto":
-            lr_init = 1.0 / w_min
-        else:
-            lr_init = float(self.learning_rate_init)
-        
-        scheduler = self._get_scheduler(lr_init, w_min, w_max)
-
-        if self.batch_size is None:
-            batch_size = min(50_000, n_samples * (n_samples - 1) // 2)
-        else:
-            batch_size = self.batch_size
-
-        history = []
-        cumulative_time = 0.0
-
-        current_stress = self._compute_full_stress(embedding, dissimilarity_matrix)
-        history.append((0.0, current_stress))
-
-        for it in range(self.max_iter):
-            t0 = time.time()
-
-            i_idx = rng.randint(0, n_samples, size=batch_size)
-            j_idx = rng.randint(0, n_samples, size=batch_size)
-
-            X_i = embedding[i_idx]
-            X_j = embedding[j_idx]
-            delta = dissimilarity_matrix[i_idx, j_idx]
-
-            diff = X_i - X_j
-            dist = np.linalg.norm(diff, axis=1)
-
-            if self.weighting == "inverse":
-                delta_safe = np.maximum(delta, d_floor)
-                w = 1.0 / (delta_safe ** 2)
-            else:
-                w = 1.0
-
-            lr = scheduler.get_rate(it)
-            
-            m = np.minimum(w * lr, 1.0)
-
-            ratio = (dist - delta) / (2 * np.maximum(dist, 1e-12)) 
-            
-            scale = m * ratio
-            update = scale[:, None] * diff
-
-            update_norms = np.linalg.norm(update, axis=1, keepdims=True)
-            scaling_factors = np.minimum(1.0, 1.0 / (update_norms + 1e-12))
-            update *= scaling_factors
-
-            np.add.at(embedding, i_idx, -update)
-            np.add.at(embedding, j_idx, update)
-
-            t1 = time.time()
-            cumulative_time += t1 - t0
-
-            if (it % 100 == 0):
-                current_stress = self._compute_full_stress(embedding, dissimilarity_matrix)
-                history.append((cumulative_time, current_stress))
-
-            max_move = np.max(update_norms)
-            if max_move < self.tol:
-                break
-
-        embedding -= np.mean(embedding, axis=0)
-
-        stress = self._compute_full_stress(embedding, dissimilarity_matrix)
-        history.append((cumulative_time, stress))
-
-        return embedding, stress, it + 1, history
     
+    def _fit_monotonic_map(self, embedding, X, n_samples_isotonic = 2000):
+        """
+        Approximates the monotonic map f(delta) -> disparity using a random sample.
+        Returns the sorted knot arrays (x_knots, y_knots) for interpolation.
+        """
+        n_points = embedding.shape[0]
+        rng = check_random_state(self.random_state)
+
+        idx_i = rng.randint(0, n_points, size=n_samples_isotonic)
+        idx_j = rng.randint(0, n_points, size=n_samples_isotonic)
+        mask = idx_i != idx_j
+        idx_i, idx_j = idx_i[mask], idx_j[mask]
+
+        X_emb_i = embedding[idx_i]
+        X_emb_j = embedding[idx_j]
+        dist_vector = np.linalg.norm(X_emb_i - X_emb_j, axis=1)
+
+        X_raw_i = X[idx_i]
+        X_raw_j = X[idx_j]
+        delta_vector = np.linalg.norm(X_raw_i - X_raw_j, axis=1)
+
+        ir = IsotonicRegression(increasing=True, out_of_bounds="clip")
+        dist_disparity = ir.fit_transofrm(delta_vector, dist_vector)
+
+        x_knots = np.ascontiguousarray(ir.f_.x, dtype=np.float64)
+        y_knots = np.ascontiguousarray(ir.f_.y, dtype=np.float64)
+
+        denom = np.sum(dist_disparity ** 2)
+        if denom > 0:
+            scale = np.sqrt(len(dist_disparity) / denom)
+            y_knots *= scale
+        
+        return x_knots, y_knots
     
     def _solve_true_sgd(self, X, random_state, n_epochs=15):
         """
@@ -494,9 +394,9 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
 
         if self.sampling_strategy == "cycle":
             rows, cols = np.triu_indices(n_samples, k=1)
-            all_pairs = np.column_stack((rows, cols)).astype(np.int32)
+            all_pairs_canonical = np.column_stack((rows, cols)).astype(np.int32)
         else:
-            all_pairs = None
+            all_pairs_canonical = None
         
         if self.dissimilarity in ["precomputed", "euclidean"]:
             if self.sampling_strategy == "random":
@@ -509,25 +409,25 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
 
             if self.weighting == "inverse":
                 clipped_d = np.maximum(flat_distances, d_floor)
-                flat_weights = 1.0 / (clipped_d ** 2)
+                flat_weights_canonical = 1.0 / (clipped_d ** 2)
             else:
-                flat_weights = np.ones(all_pairs.shape[0], dtype=np.float64)
+                flat_weights_canonical = np.ones(all_pairs_canonical.shape[0], dtype=np.float64)
             
             is_lazy = False
 
         else: # self.dissimilarity == "lazy"
-            if all_pairs is None:
+            if all_pairs_canonical is None:
                 dummy_rows = rng.randint(0, n_samples, size=1000)
                 dummy_cols = rng.randint(0, n_samples, size=1000)
                 mask = dummy_rows != dummy_cols # Filter out i=j
                 sample_pairs = np.column_stack((dummy_rows[mask], dummy_cols[mask])).astype(np.int32)
             else:
-                sample_pairs = all_pairs
+                sample_pairs = all_pairs_canonical
             
             w_min, w_max = self._estimate_weight_bounds(X, sample_pairs, rng)
             
             flat_distances = None
-            flat_weights = None
+            flat_weights_canonical = None
             is_lazy = True
 
         if self.learning_rate_init == "auto":
@@ -554,26 +454,59 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         # current_stress = safe_compute_stress()
         # history.append((0.0, current_stress))
 
-        if self.weighting == "inverse":
-            weighting_code = 1
-        else:
-            weighting_code = 0
+        weighting_code = 1 if self.weighting == "inverse" else 0
+
+        metric_mds = bool(self.metric)
+
+        if not metric_mds and not is_lazy:
+            ir = IsotonicRegression(out_of_bounds="clip")
+
+            valid_idx = np.flatnonzero(flat_distances != 0.0)
+            if valid_idx.size == 0:
+                raise ValueError(
+                "Non-metric MDS: all dissimilarities are 0 (treated as missing)."
+                )
+            
+            order_valid = np.argsort(flat_distances[valid_idx], kind="mergesort")
+            sorted_valid_idx = valid_idx[order_valid]
+
+            x_sorted = np.ascontiguousarray(flat_distances[sorted_valid_idx], dtype=np.float64)
         
         for epoch in range(n_epochs):
             t0 = time.time()
             lr = scheduler.get_rate(epoch)
 
             if not is_lazy:
+                if metric_mds:
+                    target_canonical = flat_distances
+                else:
+                    diffs = embedding[rows] - embedding[cols]
+                    flat_embed_dist = np.sqrt((diffs * diffs).sum(axis=1))
+
+                    y_sorted = flat_embed_dist[sorted_valid_idx]
+
+                    if epoch < 1:
+                        disparities_sorted = x_sorted.copy()
+                    else:
+                        disparities_sorted = ir.fit_transform(x_sorted, y_sorted)
+                    
+                    target_canonical = np.zeros_like(flat_distances)
+                    target_canonical[sorted_valid_idx] = disparities_sorted
+
+                    denom = np.sum(target_canonical * target_canonical)
+                    if denom > 0.0:
+                        target_canonical *= np.sqrt(n_pairs / denom)
+                
                 # Standard Mode: We must shuffle strict alignment of pairs, distances, and weights.
-                all_pairs, flat_distances, flat_weights = sklearn_shuffle(
-                    all_pairs, flat_distances, flat_weights, random_state=rng
+                pairs_epoch, target_epoch, weights_epoch = sklearn_shuffle(
+                    all_pairs_canonical, target_canonical, flat_weights_canonical, random_state=rng
                 )
                 
                 run_sgd_epoch(
                     embedding, 
-                    flat_distances, 
-                    flat_weights, 
-                    all_pairs, 
+                    target_epoch, 
+                    weights_epoch, 
+                    pairs_epoch,
                     lr
                 )
 
@@ -582,11 +515,19 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                 # This achieves O(1) auxiliary memory usage.
                 
                 # Pass a fresh seed every epoch for the C-level RNG
+                x_knots = None
+                y_knots = None
+
+                if not metric_mds:
+                    x_knots, y_knots = self._fit_monotonic_map(embedding, X)
+                
                 current_seed = rng.randint(1, 2**31 - 1)
                 
                 run_sgd_epoch_lazy_random_native(
                     embedding,
                     X,
+                    x_knots,
+                    y_knots,
                     n_pairs,
                     lr,
                     weighting_code,

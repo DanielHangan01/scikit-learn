@@ -14,6 +14,44 @@ cdef inline cn.uint32_t xorshift32(cn.uint32_t* state) nogil:
     state[0] = x
     return x
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline double interpolate_isotonic(
+    double val,
+    double[::1] x_knots,
+    double[::1] y_knots,
+    int n_knots
+) nogil:
+    """
+    Finds y corresponding to val using linear interpolation on sorted knots.
+    Performs Binary Search.
+    """
+    if val <= x_knots[0]:
+        return y_knots[0]
+    if val >= x_knots[n_knots - 1]:
+        return y_knots[n_knots - 1]
+
+    cdef int left = 0
+    cdef int right = n_knots - 1
+    cdef int mid
+
+    while left < right - 1:
+        mid = (left + right) // 2
+        if x_knots[mid] <= val:
+            left = mid
+        else:
+            right = mid
+    
+    cdef double x0 = x_knots[left]
+    cdef double x1 = x_knots[left + 1]
+    cdef double y0 = y_knots[left]
+    cdef double y1 = y_knots[left + 1]
+
+    if x1 == x0:
+        return y0
+    
+    return y0 + (y1 - y0) * (val - x0) / (x1 - x0)
+
 cpdef void run_sgd_epoch(
     double[:, ::1] embedding,      # Shape (n_samples, n_components)
     double[::1] target_distances,  # Shape (n_pairs) - PRE-EXTRACTED
@@ -72,6 +110,8 @@ cpdef void run_sgd_epoch(
 cpdef void run_sgd_epoch_lazy_random_native(
     double[:, ::1] embedding,      # Modified in-place
     double[:, ::1] X_original,     # Read-only features
+    double[::1] x_knots=None,
+    double[::1] y_knots=None,
     long n_updates,                # Number of updates to perform (e.g. n_pairs)
     double lr,
     int weighting_code,            # 1 => inverse, 0 => uniform
@@ -83,6 +123,8 @@ cpdef void run_sgd_epoch_lazy_random_native(
         int n_samples = X_original.shape[0]
         int n_features = X_original.shape[1]
         int n_components = embedding.shape[1]
+        int n_knots = 0
+        int is_non_metric = (x_knots is not None)
         
         double delta, dist, w, ratio, step_val
         double diff, grad
@@ -92,6 +134,9 @@ cpdef void run_sgd_epoch_lazy_random_native(
 
     if diff_vector == NULL:
         raise MemoryError("Failed to allocate diff_vector")
+    
+    if is_non_metric:
+        n_knots = x_knots.shape[0]
     
     try:
         with nogil:
@@ -116,6 +161,11 @@ cpdef void run_sgd_epoch_lazy_random_native(
                 else:
                     w = 1.0
 
+                if is_non_metric:
+                    target = interpolate_isotonic(delta, x_knots, y_knots, n_knots)
+                else:
+                    target = delta
+
                 # Compute embedding distance + store diffs
                 dist = 0.0
                 for d in range(n_components):
@@ -132,7 +182,7 @@ cpdef void run_sgd_epoch_lazy_random_native(
                 if step_val > 1.0:
                     step_val = 1.0
                 
-                ratio = step_val * (dist - delta) / (2.0 * dist)
+                ratio = step_val * (dist - target) / (2.0 * dist)
                 
                 # Apply update
                 for d in range(n_components):
@@ -142,3 +192,5 @@ cpdef void run_sgd_epoch_lazy_random_native(
 
     finally:
         free(diff_vector)
+
+    
