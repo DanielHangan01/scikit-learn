@@ -73,19 +73,18 @@ class _HybridScheduler(_BaseScheduler):
     def __init__(self, lr_init, w_min, w_max, max_iter, switch_ratio=0.4, epsilon=0.01, **kwargs):
         super().__init__(lr_init, w_min, w_max, max_iter, epsilon, **kwargs)
         
-        # Force the switch at 40% of epochs (tunable)
         self.tau = int(max_iter * switch_ratio)
         
         # --- Phase 1: Exponential Parameters ---
         # Target an intermediate rate 'lr_mid' at the switch point.
         # Decay to 10% of init rate allows significant early movement.
-        lr_mid = self.lr_init * 0.1  
+        lr_mid = self.lr_init * 0.1
         
         if self.tau > 0:
             self.decay_exp = -np.log(lr_mid / self.lr_init) / self.tau
         else:
             self.decay_exp = 0.0
-            lr_mid = self.lr_init 
+            lr_mid = self.lr_init
 
         # --- Phase 2: Harmonic (1/t) Parameters ---
         # Function: f(t) = a / (1 + b*(t - tau))
@@ -135,6 +134,14 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
     learning_rate_init : float or 'auto', default='auto'
         The initial learning rate for the SGD updates.
 
+    scheduler : {'exponential', 'harmonic', 'constant', 'hybrid'}, default='exponential'
+        The decay schedule for the learning rate.
+    
+    scheduler_switch_ratio : float, default=0.4
+        Only used for 'hybrid' scheduler. The fraction of max_iter at which 
+        the scheduler switches from exponential decay (exploration) to 
+        harmonic decay (refinement).
+
     batch_size : int or None, default=None
         Number of pairs to sample per step. If None, defaults to min(50_000, n_pairs)
 
@@ -165,15 +172,17 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         "random_state": ["random_state"],
         "algorithm": [StrOptions({"mini_batch", "true_sgd"})],
         "scheduler": [StrOptions({"exponential", "harmonic", "constant", "hybrid"})],
+        "scheduler_switch_ratio": [Interval(Real, 0.0, 1.0, closed="both")],
+        "epsilon": [Interval(Real, 0.0, 1.0, closed="both")],
         "weighting": [StrOptions({"uniform", "inverse"})],
         "sampling_strategy": [StrOptions({"cycle", "random"})],
     }
 
     def __init__(self, n_components=2, *, metric=True, n_init=1,
-                 max_iter=300, tol=1e-4, learning_rate_init="auto",
+                 max_iter=30, tol=1e-4, learning_rate_init="auto",
                  batch_size=None, dissimilarity="euclidean",
-                 algorithm="mini_batch", scheduler="exponential", weighting="uniform",
-                 sampling_strategy="cycle", n_jobs=None, random_state=None):
+                 scheduler="exponential", scheduler_switch_ratio=0.5, epsilon=0.001,
+                 weighting="uniform", sampling_strategy="cycle", n_jobs=None, random_state=None):
         self.n_components = n_components
         self.metric = metric
         self.n_init = n_init
@@ -182,8 +191,9 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         self.learning_rate_init = learning_rate_init
         self.batch_size = batch_size
         self.dissimilarity = dissimilarity
-        self.algorithm = algorithm
         self.scheduler = scheduler
+        self.scheduler_switch_ratio = scheduler_switch_ratio
+        self.epsilon = epsilon
         self.weighting = weighting
         self.sampling_strategy = sampling_strategy
         self.n_jobs = n_jobs
@@ -209,7 +219,6 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         """
         self._validate_params()
 
-        # 1. PRECOMPUTED: User provides the matrix
         if self.dissimilarity == "precomputed":
             self.dissimilarity_matrix_ = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
             if self.dissimilarity_matrix_.shape[0] != self.dissimilarity_matrix_.shape[1]:
@@ -218,7 +227,6 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             
             solver_input = self.dissimilarity_matrix_
 
-        # 2. EUCLIDEAN: User provides features, we precalculate matrix
         elif self.dissimilarity == "euclidean":
             X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
             # Store full matrix (O(N^2) memory)
@@ -226,9 +234,10 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             
             solver_input = self.dissimilarity_matrix_
 
-        # 3. LAZY: User provides features, we use them raw (Scalable for N > 10k)
         elif self.dissimilarity == "lazy":
             X = check_array(X, accept_sparse=False, ensure_2d=True, dtype=np.float64)
+            X = np.ascontiguousarray(X, dtype=np.float64)
+            
             self.dissimilarity_matrix_ = None 
             
             solver_input = X
@@ -273,7 +282,8 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             "max_iter": self.max_iter,
             "w_min": w_min,
             "w_max": w_max,
-            "epsilon": 0.1,
+            "epsilon": self.epsilon,
+            "switch_ratio": self.scheduler_switch_ratio,
         }
 
         schedulers = {
@@ -317,7 +327,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             return 1.0, 1.0
             
         n_pairs = all_pairs.shape[0]
-        # Sample random pairs to estimate bounds
+
         indices = rng.choice(n_pairs, size=min(n_pairs, n_samples_est), replace=False)
         sample_pairs = all_pairs[indices]
         
@@ -365,7 +375,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         delta_vector = np.linalg.norm(X_raw_i - X_raw_j, axis=1)
 
         ir = IsotonicRegression(increasing=True, out_of_bounds="clip")
-        dist_disparity = ir.fit_transofrm(delta_vector, dist_vector)
+        dist_disparity = ir.fit_transform(delta_vector, dist_vector)
 
         x_knots = np.ascontiguousarray(ir.f_.x, dtype=np.float64)
         y_knots = np.ascontiguousarray(ir.f_.y, dtype=np.float64)
@@ -450,9 +460,8 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
             else:
                 return self._compute_full_stress(embedding, X)
 
-        # Use the helper
-        # current_stress = safe_compute_stress()
-        # history.append((0.0, current_stress))
+        current_stress = safe_compute_stress()
+        history.append((0.0, current_stress))
 
         weighting_code = 1 if self.weighting == "inverse" else 0
 
@@ -497,7 +506,6 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                     if denom > 0.0:
                         target_canonical *= np.sqrt(n_pairs / denom)
                 
-                # Standard Mode: We must shuffle strict alignment of pairs, distances, and weights.
                 pairs_epoch, target_epoch, weights_epoch = sklearn_shuffle(
                     all_pairs_canonical, target_canonical, flat_weights_canonical, random_state=rng
                 )
@@ -511,10 +519,6 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                 )
 
             else:
-                # We don't generate arrays in Python. We pass the count.
-                # This achieves O(1) auxiliary memory usage.
-                
-                # Pass a fresh seed every epoch for the C-level RNG
                 x_knots = None
                 y_knots = None
 
@@ -526,25 +530,24 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                 run_sgd_epoch_lazy_random_native(
                     embedding,
                     X,
-                    x_knots,
-                    y_knots,
                     n_pairs,
                     lr,
                     weighting_code,
-                    current_seed
+                    current_seed,
+                    x_knots=x_knots,
+                    y_knots=y_knots,
                 )
 
             t1 = time.time()
             cumulative_time += t1 - t0
 
             # Logging (skip if unsafe)
-            # if n_samples < 20000:
-            #   current_stress = safe_compute_stress()
-            #   history.append((cumulative_time, current_stress))
+            if n_samples <= 10000:
+                current_stress = safe_compute_stress()
+                history.append((cumulative_time, current_stress))
         
         embedding -= np.mean(embedding, axis=0)
         
-        # stress = safe_compute_stress()
-        stress = -1.0
+        stress = safe_compute_stress()
 
         return embedding, stress, n_epochs, history
