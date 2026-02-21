@@ -3,6 +3,7 @@
 from libc.math cimport sqrt
 from libc.stdlib cimport malloc, free
 cimport numpy as cn
+cimport cython
 
 cn.import_array()
 
@@ -92,13 +93,6 @@ cpdef void run_sgd_epoch(
                 mu = 1.0
             
             move_mag = (dist - delta) * 0.5 * mu
-            
-            # Gradient Clipping
-            # if move_mag > 1.0:
-            #    move_mag = 1.0
-            # elif move_mag < -1.0:
-            #    move_mag = -1.0
-            
             ratio = move_mag / dist
             
             for d in range(n_components):
@@ -110,12 +104,12 @@ cpdef void run_sgd_epoch(
 cpdef void run_sgd_epoch_lazy_random_native(
     double[:, ::1] embedding,      # Modified in-place
     double[:, ::1] X_original,     # Read-only features
-    double[::1] x_knots=None,
-    double[::1] y_knots=None,
     long n_updates,                # Number of updates to perform (e.g. n_pairs)
     double lr,
     int weighting_code,            # 1 => inverse, 0 => uniform
-    cn.uint32_t seed               # RNG seed
+    cn.uint32_t seed,              # RNG seed
+    double[::1] x_knots=None,
+    double[::1] y_knots=None
 ):
     cdef:
         long k
@@ -128,6 +122,7 @@ cpdef void run_sgd_epoch_lazy_random_native(
         
         double delta, dist, w, ratio, step_val
         double diff, grad
+        double target
 
         cn.uint32_t rng_state = seed if seed != 0 else 1
         double* diff_vector = <double*> malloc(n_components * sizeof(double))
@@ -147,7 +142,6 @@ cpdef void run_sgd_epoch_lazy_random_native(
                 if i == j:
                     continue
                 
-                # Compute raw dissimilarity delta in feature space
                 delta = 0.0
                 for f in range(n_features):
                     diff = X_original[i, f] - X_original[j, f]
@@ -166,7 +160,6 @@ cpdef void run_sgd_epoch_lazy_random_native(
                 else:
                     target = delta
 
-                # Compute embedding distance + store diffs
                 dist = 0.0
                 for d in range(n_components):
                     diff = embedding[i, d] - embedding[j, d]
@@ -177,14 +170,12 @@ cpdef void run_sgd_epoch_lazy_random_native(
                 if dist < 1e-12:
                     continue
                 
-                # Step size with cap
                 step_val = w * lr
                 if step_val > 1.0:
                     step_val = 1.0
                 
                 ratio = step_val * (dist - target) / (2.0 * dist)
                 
-                # Apply update
                 for d in range(n_components):
                     grad = ratio * diff_vector[d]
                     embedding[i, d] -= grad

@@ -24,6 +24,7 @@ from sklearn.utils._param_validation import (
 )
 from sklearn.utils.parallel import Parallel, delayed
 from sklearn.utils.validation import validate_data
+import time
 
 
 def _smacof_single(
@@ -140,6 +141,10 @@ def _smacof_single(
     ir = IsotonicRegression(out_of_bounds="clip")
 
     old_stress = None
+
+    history = []
+    start_time = time.time()
+
     for it in range(max_iter):
         # Compute distance and monotonic regression
         if metric:
@@ -174,9 +179,14 @@ def _smacof_single(
         B[np.arange(len(B)), np.arange(len(B))] += ratio.sum(axis=1)
         X = 1.0 / n_samples * np.dot(B, X)
 
-        # Compute stress
         distances = euclidean_distances(X)
+
+        elapsed = time.time() - start_time
+
+        # Compute stress
         stress = ((distances.ravel() - disparities.ravel()) ** 2).sum() / 2
+
+        history.append((elapsed, stress))
 
         if verbose >= 2:  # pragma: no cover
             print(f"Iteration {it}, stress {stress:.4f}")
@@ -192,7 +202,7 @@ def _smacof_single(
         sum_squared_distances = (distances.ravel() ** 2).sum()
         stress = np.sqrt(stress / (sum_squared_distances / 2))
 
-    return X, stress, it + 1
+    return X, stress, it + 1, history
 
 
 # TODO(1.9): change default `n_init` to 1, see PR #31117
@@ -387,10 +397,11 @@ def smacof(
             n_init = 1
 
     best_pos, best_stress = None, None
+    best_history = None
 
     if effective_n_jobs(n_jobs) == 1:
         for it in range(n_init):
-            pos, stress, n_iter_ = _smacof_single(
+            pos, stress, n_iter_, history_ = _smacof_single(
                 dissimilarities,
                 metric=metric,
                 n_components=n_components,
@@ -405,6 +416,7 @@ def smacof(
                 best_stress = stress
                 best_pos = pos.copy()
                 best_iter = n_iter_
+                best_history = history_
     else:
         seeds = random_state.randint(np.iinfo(np.int32).max, size=n_init)
         results = Parallel(n_jobs=n_jobs, verbose=max(verbose - 1, 0))(
@@ -421,14 +433,15 @@ def smacof(
             )
             for seed in seeds
         )
-        positions, stress, n_iters = zip(*results)
+        positions, stress, n_iters, histories = zip(*results)
         best = np.argmin(stress)
         best_stress = stress[best]
         best_pos = positions[best]
         best_iter = n_iters[best]
+        best_history = histories[best]
 
     if return_n_iter:
-        return best_pos, best_stress, best_iter
+        return best_pos, best_stress, best_iter, best_history
     else:
         return best_pos, best_stress
 
@@ -818,7 +831,7 @@ class MDS(BaseEstimator):
         else:
             init_array = None
 
-        self.embedding_, self.stress_, self.n_iter_ = smacof(
+        self.embedding_, self.stress_, self.n_iter_, self.stress_history_ = smacof(
             self.dissimilarity_matrix_,
             metric=self._metric_mds,
             n_components=self.n_components,
