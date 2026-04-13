@@ -1,213 +1,199 @@
-.. -*- mode: rst -*-
+SGD-MDS: Bridging Graph Drawing and Dimensionality Reduction
+=============================================================
 
-|Azure| |Codecov| |CircleCI| |Nightly wheels| |Ruff| |PythonVersion| |PyPI| |DOI| |Benchmark|
+This is a fork of `scikit-learn <https://scikit-learn.org>`_ with the implementation and
+experiments from the paper:
 
-.. |Azure| image:: https://dev.azure.com/scikit-learn/scikit-learn/_apis/build/status/scikit-learn.scikit-learn?branchName=main
-   :target: https://dev.azure.com/scikit-learn/scikit-learn/_build/latest?definitionId=1&branchName=main
+    **Bridging Graph Drawing and Dimensionality Reduction with Stochastic Stress Optimization**
+    *(EUROVIS 2026, GDxDR: Bridging Graph Drawing and Dimensionality Reduction, Short Paper)*
 
-.. |CircleCI| image:: https://circleci.com/gh/scikit-learn/scikit-learn/tree/main.svg?style=shield
-   :target: https://circleci.com/gh/scikit-learn/scikit-learn
+The paper adapts SGD-based stress optimization from graph drawing to metric MDS on vector data.
+The result is a scikit-learn-compatible ``SGDMDS`` estimator that converges faster than SMACOF
+while reaching comparable or lower stress on standard high-dimensional benchmarks.
 
-.. |Codecov| image:: https://codecov.io/gh/scikit-learn/scikit-learn/branch/main/graph/badge.svg?token=Pk8G9gg3y9
-   :target: https://codecov.io/gh/scikit-learn/scikit-learn
 
-.. |Nightly wheels| image:: https://github.com/scikit-learn/scikit-learn/actions/workflows/wheels.yml/badge.svg?event=schedule
-   :target: https://github.com/scikit-learn/scikit-learn/actions?query=workflow%3A%22Wheel+builder%22+event%3Aschedule
+Repository Structure
+--------------------
 
-.. |Ruff| image:: https://img.shields.io/badge/code%20style-ruff-000000.svg
-   :target: https://github.com/astral-sh/ruff
+Core Implementation
+~~~~~~~~~~~~~~~~~~~
 
-.. |PythonVersion| image:: https://img.shields.io/pypi/pyversions/scikit-learn.svg
-   :target: https://pypi.org/project/scikit-learn/
+All new code lives under ``sklearn/manifold/``:
 
-.. |PyPI| image:: https://img.shields.io/pypi/v/scikit-learn
-   :target: https://pypi.org/project/scikit-learn
+- ``_sgd_mds.py``: the ``SGDMDS`` estimator. Includes the learning rate schedulers
+  (exponential, harmonic, hybrid, constant), weight bounds estimation, and the
+  ``fit``/``fit_transform`` interface. Supports three dissimilarity modes: ``'euclidean'``,
+  ``'precomputed'``, and ``'lazy'`` (distances computed on-the-fly, O(1) auxiliary memory).
 
-.. |DOI| image:: https://zenodo.org/badge/21369/scikit-learn/scikit-learn.svg
-   :target: https://zenodo.org/badge/latestdoi/21369/scikit-learn/scikit-learn
+- ``_sgd_mds_cython.pyx``: the Cython inner loops. ``run_sgd_epoch`` handles the precomputed
+  mode (sampling without replacement), and ``run_sgd_epoch_lazy_random_native`` handles the
+  lazy mode (xorshift32 sampling). Also includes ``interpolate_isotonic`` for non-metric MDS.
 
-.. |Benchmark| image:: https://img.shields.io/badge/Benchmarked%20by-asv-blue
-   :target: https://scikit-learn.org/scikit-learn-benchmarks
+- ``_mds.py``: the existing SMACOF implementation, extended with per-iteration timing and
+  stress history (``stress_history_`` attribute) used in benchmark comparisons.
 
-.. |PythonMinVersion| replace:: 3.11
-.. |NumPyMinVersion| replace:: 1.24.1
-.. |SciPyMinVersion| replace:: 1.10.0
-.. |JoblibMinVersion| replace:: 1.3.0
-.. |ThreadpoolctlMinVersion| replace:: 3.2.0
-.. |MatplotlibMinVersion| replace:: 3.6.1
-.. |Scikit-ImageMinVersion| replace:: 0.22.0
-.. |PandasMinVersion| replace:: 1.5.0
-.. |SeabornMinVersion| replace:: 0.13.0
-.. |PytestMinVersion| replace:: 7.1.2
-.. |PlotlyMinVersion| replace:: 5.18.0
+- ``meson.build``: registers ``_sgd_mds_cython`` as a compiled extension.
 
-.. image:: https://raw.githubusercontent.com/scikit-learn/scikit-learn/main/doc/logos/scikit-learn-logo.png
-  :target: https://scikit-learn.org/
+Benchmarks
+~~~~~~~~~~
 
-**scikit-learn** is a Python module for machine learning built on top of
-SciPy and is distributed under the 3-Clause BSD license.
+All benchmark scripts are under ``sklearn/manifold/benchmarks/``:
 
-The project was started in 2007 by David Cournapeau as a Google Summer
-of Code project, and since then many volunteers have contributed. See
-the `About us <https://scikit-learn.org/dev/about.html#authors>`__ page
-for a list of core contributors.
+- ``bench_utils.py``: shared utilities for loading datasets (synthetic and from disk) and
+  the ``run_smacof_benchmark`` / ``run_sgd_benchmark`` wrappers.
 
-It is currently maintained by a team of volunteers.
+- ``run_experiment_a.py``: runs SGD-MDS vs SMACOF on precomputed distance matrices over
+  20 random seeds per dataset, saving stress, timing, and convergence histories.
 
-Website: https://scikit-learn.org
+- ``run_experiment_b.py``: scaling study with two protocols in one script. The synthetic
+  protocol sweeps N from 500 to 5000 on s_curve, swiss_roll, and torus (lifted to high
+  dimensionality). The real-world protocol runs fashion_mnist, spambase, and seismic at
+  their native size. Both compare SMACOF, SGD-euclidean, and SGD-lazy.
+
+- ``run_experiment_c.py``: hyperparameter grid search over learning rates, schedulers,
+  switch ratios, epsilons, and iteration budgets.
+
+All results are written to ``sklearn/manifold/benchmarks/results/``.
+
+Datasets
+~~~~~~~~
+
+Real-world datasets go in ``sklearn/manifold/benchmarks/datasets/<name>/`` as ``X.npy``
+and optionally ``y.npy``. The datasets used in the paper come from the Espadoto et al.
+survey benchmark collection. Synthetic datasets (``s_curve``, ``swiss_roll``, ``torus``)
+are generated on the fly and need no setup.
+
 
 Installation
 ------------
 
-Dependencies
-~~~~~~~~~~~~
+The Cython extension ``_sgd_mds_cython`` needs to be compiled before use, so a full
+in-place build of scikit-learn is required.
 
-scikit-learn requires:
+1. Create and activate a virtual environment::
 
-- Python (>= |PythonMinVersion|)
-- NumPy (>= |NumPyMinVersion|)
-- SciPy (>= |SciPyMinVersion|)
-- joblib (>= |JoblibMinVersion|)
-- threadpoolctl (>= |ThreadpoolctlMinVersion|)
+    python -m venv .venv
+    source .venv/bin/activate
 
-=======
+2. Install build dependencies::
 
-Scikit-learn plotting capabilities (i.e., functions start with ``plot_`` and
-classes end with ``Display``) require Matplotlib (>= |MatplotlibMinVersion|).
-For running the examples Matplotlib >= |MatplotlibMinVersion| is required.
-A few examples require scikit-image >= |Scikit-ImageMinVersion|, a few examples
-require pandas >= |PandasMinVersion|, some examples require seaborn >=
-|SeabornMinVersion| and Plotly >= |PlotlyMinVersion|.
+    pip install numpy cython meson-python ninja
 
-User installation
-~~~~~~~~~~~~~~~~~
+3. Build scikit-learn in-place::
 
-If you already have a working installation of NumPy and SciPy,
-the easiest way to install scikit-learn is using ``pip``::
+    pip install --no-build-isolation -e .
 
-    pip install -U scikit-learn
+To check the build worked::
 
-or ``conda``::
-
-    conda install -c conda-forge scikit-learn
-
-The documentation includes more detailed `installation instructions <https://scikit-learn.org/stable/install.html>`_.
+    python -c "from sklearn.manifold._sgd_mds import SGDMDS; print(SGDMDS())"
 
 
-Changelog
----------
+Reproducing the Experiments
+----------------------------
 
-See the `changelog <https://scikit-learn.org/dev/whats_new.html>`__
-for a history of notable changes to scikit-learn.
+All benchmark scripts need to be run from the ``sklearn/manifold/benchmarks/`` directory::
 
-Development
------------
+    cd sklearn/manifold/benchmarks/
 
-We welcome new contributors of all experience levels. The scikit-learn
-community goals are to be helpful, welcoming, and effective. The
-`Development Guide <https://scikit-learn.org/stable/developers/index.html>`_
-has detailed information about contributing code, documentation, tests, and
-more. We've included some basic information in this README.
-
-Important links
-~~~~~~~~~~~~~~~
-
-- Official source code repo: https://github.com/scikit-learn/scikit-learn
-- Download releases: https://pypi.org/project/scikit-learn/
-- Issue tracker: https://github.com/scikit-learn/scikit-learn/issues
-
-Source code
-~~~~~~~~~~~
-
-You can check the latest sources with the command::
-
-    git clone https://github.com/scikit-learn/scikit-learn.git
-
-Contributing
-~~~~~~~~~~~~
-
-To learn more about making a contribution to scikit-learn, please see our
-`Contributing guide
-<https://scikit-learn.org/dev/developers/contributing.html>`_.
-
-Testing
-~~~~~~~
-
-After installation, you can launch the test suite from outside the source
-directory (you will need to have ``pytest`` >= |PytestMinVersion| installed)::
-
-    pytest sklearn
-
-See the web page https://scikit-learn.org/dev/developers/contributing.html#testing-and-improving-test-coverage
-for more information.
-
-    Random number generation can be controlled during testing by setting
-    the ``SKLEARN_SEED`` environment variable.
-
-Submitting a Pull Request
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Before opening a Pull Request, have a look at the
-full Contributing page to make sure your code complies
-with our guidelines: https://scikit-learn.org/stable/developers/index.html
-
-Project History
----------------
-
-The project was started in 2007 by David Cournapeau as a Google Summer
-of Code project, and since then many volunteers have contributed. See
-the `About us <https://scikit-learn.org/dev/about.html#authors>`__ page
-for a list of core contributors.
-
-The project is currently maintained by a team of volunteers.
-
-**Note**: `scikit-learn` was previously referred to as `scikits.learn`.
-
-Help and Support
-----------------
-
-Documentation
+Dataset Setup
 ~~~~~~~~~~~~~
 
-- HTML documentation (stable release): https://scikit-learn.org
-- HTML documentation (development version): https://scikit-learn.org/dev/
-- FAQ: https://scikit-learn.org/stable/faq.html
+Place real-world datasets under ``datasets/<name>/X.npy`` (and optionally ``y.npy``)::
 
-Communication
-~~~~~~~~~~~~~
+    benchmarks/datasets/
+        fashion_mnist/
+            X.npy
+            y.npy
+        coil20/
+            X.npy
+            y.npy
+        epileptic/
+            X.npy
+            ...
 
-Main Channels
-^^^^^^^^^^^^^
+Synthetic datasets are generated automatically.
 
-- **Website**: https://scikit-learn.org
-- **Blog**: https://blog.scikit-learn.org
-- **Mailing list**: https://mail.python.org/mailman/listinfo/scikit-learn
+Experiment A: Convergence and Solution Quality
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Developer & Support
-^^^^^^^^^^^^^^^^^^^^^^
+Runs SGD-MDS (30 epochs) vs SMACOF (300 iterations) over 20 random seeds per dataset.
+Reproduces Figures 1 and 2 and the stress comparison tables.
 
-- **GitHub Discussions**: https://github.com/scikit-learn/scikit-learn/discussions
-- **Stack Overflow**: https://stackoverflow.com/questions/tagged/scikit-learn
-- **Discord**: https://discord.gg/h9qyrK8Jc8
+.. code-block:: bash
 
-Social Media Platforms
-^^^^^^^^^^^^^^^^^^^^^^
+    # All datasets in benchmarks/datasets/ plus s_curve
+    python run_experiment_a.py
 
-- **LinkedIn**: https://www.linkedin.com/company/scikit-learn
-- **YouTube**: https://www.youtube.com/channel/UCJosFjYm0ZYVUARxuOZqnnw/playlists
-- **Facebook**: https://www.facebook.com/scikitlearnofficial/
-- **Instagram**: https://www.instagram.com/scikitlearnofficial/
-- **TikTok**: https://www.tiktok.com/@scikit.learn
-- **Bluesky**: https://bsky.app/profile/scikit-learn.org
-- **Mastodon**: https://mastodon.social/@sklearn@fosstodon.org
+    # Specific datasets
+    python run_experiment_a.py fashion_mnist coil20
 
-Resources
-^^^^^^^^^
+Results go to ``results/experiment_a/sgd_30_epochs/<dataset>/``.
 
-- **Calendar**: https://blog.scikit-learn.org/calendar/
-- **Logos & Branding**: https://github.com/scikit-learn/scikit-learn/tree/main/doc/logos
+Experiment B: Scaling Study (Synthetic + Real-World)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Reproduces Figure 3. Measures wall-clock time for SMACOF, SGD-euclidean, and SGD-lazy
+as N grows (synthetic) or at native dataset size (real-world).
+
+.. code-block:: bash
+
+    # Both protocols
+    python run_experiment_b.py
+
+    # Synthetic sweep only
+    python run_experiment_b.py synthetic
+
+    # Real-world only
+    python run_experiment_b.py real
+
+    # Specific dataset(s)
+    python run_experiment_b.py torus fashion_mnist
+
+Results go to ``results/experiment_b/scaling_mixed_euclid_vs_lazy/<dataset>/``
+
+Experiment C: Hyperparameter Grid Search
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Searches over learning rates, schedulers, switch ratios, and epsilons to find the
+configuration used in the other experiments.
+
+.. code-block:: bash
+
+    python run_experiment_c.py
+
+    # Specific datasets
+    python run_experiment_c.py fashion_mnist s_curve
+
+Results go to ``results/experiment_c/<dataset>/``.
+
+
+Quick Usage Example
+-------------------
+
+.. code-block:: python
+
+    import numpy as np
+    from sklearn.manifold._sgd_mds import SGDMDS
+
+    X = np.random.randn(500, 50)
+
+    # Standard mode (N <= ~20,000): precomputes the full distance matrix
+    sgd = SGDMDS(n_components=2, dissimilarity="euclidean",
+                 max_iter=30, scheduler="hybrid", random_state=42)
+    embedding = sgd.fit_transform(X)
+
+    # Lazy mode (large N): computes distances on-the-fly, O(1) extra memory
+    sgd_lazy = SGDMDS(n_components=2, dissimilarity="lazy",
+                      max_iter=30, scheduler="hybrid", random_state=42)
+    embedding_lazy = sgd_lazy.fit_transform(X)
+
+    print(f"Stress: {sgd.stress_:.4f}, Iterations: {sgd.n_iter_}")
+
 
 Citation
-~~~~~~~~
+--------
 
-If you use scikit-learn in a scientific publication, we would appreciate citations: https://scikit-learn.org/stable/about.html#citing-scikit-learn
+If you use this code, please cite::
+
+    Bridging Graph Drawing and Dimensionality Reduction with Stochastic Stress Optimization.
+    EUROVIS 2026, GDxDR: Bridging Graph Drawing and Dimensionality Reduction, Short Paper.
