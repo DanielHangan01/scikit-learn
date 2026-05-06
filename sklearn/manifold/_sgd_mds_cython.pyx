@@ -184,4 +184,90 @@ cpdef void run_sgd_epoch_lazy_random_native(
     finally:
         free(diff_vector)
 
+
+cpdef void run_sgd_epoch_pivot_lazy(
+    double[:, ::1] embedding,      # Modified in-place
+    double[:, ::1] X_original,     # Read-only features
+    cn.int32_t[::1] pivot_indices, # Shape (k,)
+    long n_updates,                # Number of updates (typically k * n_samples)
+    double lr,
+    int weighting_code,            # 1 => inverse, 0 => uniform
+    cn.uint32_t seed,              # RNG seed
+    double[::1] x_knots=None,
+    double[::1] y_knots=None,
+):
+    cdef:
+        long k_iter
+        int i, j, p_idx, f, d
+        int n_samples = X_original.shape[0]
+        int n_features = X_original.shape[1]
+        int n_components = embedding.shape[1]
+        int n_pivots = pivot_indices.shape[0]
+        int n_knots = 0
+        int is_non_metric = (x_knots is not None)
+
+        double delta, dist, w, ratio, step_val
+        double diff, grad
+        double target
+
+        cn.uint32_t rng_state = seed if seed != 0 else 1
+        double* diff_vector = <double*> malloc(n_components * sizeof(double))
+
+    if diff_vector == NULL:
+        raise MemoryError("Failed to allocate diff_vector")
+
+    if is_non_metric:
+        n_knots = x_knots.shape[0]
+
+    try:
+        with nogil:
+            for k_iter in range(n_updates):
+                i = <int>(xorshift32(&rng_state) % n_samples)
+                p_idx = <int>(xorshift32(&rng_state) % n_pivots)
+                j = pivot_indices[p_idx]
+                if i == j:
+                    continue
+
+                delta = 0.0
+                for f in range(n_features):
+                    diff = X_original[i, f] - X_original[j, f]
+                    delta += diff * diff
+                delta = sqrt(delta)
+
+                if weighting_code == 1:
+                    if delta < 1e-6:
+                        delta = 1e-6
+                    w = 1.0 / (delta * delta)
+                else:
+                    w = 1.0
+
+                if is_non_metric:
+                    target = interpolate_isotonic(delta, x_knots, y_knots, n_knots)
+                else:
+                    target = delta
+
+                dist = 0.0
+                for d in range(n_components):
+                    diff = embedding[i, d] - embedding[j, d]
+                    diff_vector[d] = diff
+                    dist += diff * diff
+                dist = sqrt(dist)
+
+                if dist < 1e-12:
+                    continue
+
+                step_val = w * lr
+                if step_val > 1.0:
+                    step_val = 1.0
+
+                ratio = step_val * (dist - target) / (2.0 * dist)
+
+                for d in range(n_components):
+                    grad = ratio * diff_vector[d]
+                    embedding[i, d] -= grad
+                    embedding[j, d] += grad
+
+    finally:
+        free(diff_vector)
+
     

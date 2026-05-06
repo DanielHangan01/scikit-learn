@@ -186,13 +186,13 @@ def run_smacof_benchmark(X, dissimilarity="euclidean", random_state=None, max_it
     }
 
 
-def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_iter=30, 
+def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_iter=30,
                       switch_ratio=0.5, lr=0.5, epsilon=0.001):
     """
     Runs SGDMDS. Supports 'precomputed', 'euclidean', 'lazy'.
     """
     print(f"  [SGD-{dissimilarity}] Running on N={X.shape[0]}...")
-        
+
     sgd = SGDMDS(
         n_components=2,
         metric=True,
@@ -206,11 +206,11 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
         random_state=random_state,
         n_jobs=1
     )
-    
+
     t0 = time()
     embedding = sgd.fit_transform(X)
     total_time = time() - t0
-    
+
     return {
         "algo": f"SGD-{dissimilarity}",
         "embedding": embedding,
@@ -218,4 +218,47 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
         "history": sgd.stress_history_,
         "time": total_time,
         "n_iter": sgd.n_iter_
+    }
+
+
+def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=None,
+                        max_iter=30, switch_ratio=0.5, lr=0.5, epsilon=0.001):
+    """
+    Runs SGDMDS with pivot sampling strategy.
+    dissimilarity: 'lazy' or 'euclidean' (precomputed pivot pairs).
+    n_pivots: int or 'auto'.
+    """
+    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
+    print(f"  [SGD-pivot-{dissimilarity}-{k_label}] Running on N={X.shape[0]}...")
+
+    sgd = SGDMDS(
+        n_components=2,
+        metric=True,
+        n_init=1,
+        max_iter=max_iter,
+        learning_rate_init=lr,
+        scheduler="hybrid",
+        scheduler_switch_ratio=switch_ratio,
+        epsilon=epsilon,
+        dissimilarity=dissimilarity,
+        sampling_strategy="pivot",
+        n_pivots=n_pivots,
+        pivot_strategy="maxmin",
+        random_state=random_state,
+        n_jobs=1,
+    )
+
+    t0 = time()
+    embedding = sgd.fit_transform(X)
+    total_time = time() - t0
+
+    actual_k = int(sgd.pivot_indices_.shape[0])
+    return {
+        "algo": f"SGD-pivot-{dissimilarity}-{k_label}",
+        "embedding": embedding,
+        "stress": sgd.stress_,
+        "history": sgd.stress_history_,
+        "time": total_time,
+        "n_iter": sgd.n_iter_,
+        "n_pivots": actual_k,
     }
