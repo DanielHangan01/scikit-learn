@@ -18,7 +18,11 @@ from sklearn.isotonic import IsotonicRegression
 import time
 
 try:
-    from ._sgd_mds_cython import run_sgd_epoch, run_sgd_epoch_lazy_random_native
+    from ._sgd_mds_cython import (
+        run_sgd_epoch,
+        run_sgd_epoch_lazy_random_native,
+        run_sgd_epoch_pivot_lazy,
+    )
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -175,14 +179,18 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         "scheduler_switch_ratio": [Interval(Real, 0.0, 1.0, closed="both")],
         "epsilon": [Interval(Real, 0.0, 1.0, closed="both")],
         "weighting": [StrOptions({"uniform", "inverse"})],
-        "sampling_strategy": [StrOptions({"cycle", "random"})],
+        "sampling_strategy": [StrOptions({"cycle", "random", "pivot"})],
+        "n_pivots": [Interval(Integral, 1, None, closed="left"), StrOptions({"auto"})],
+        "pivot_strategy": [StrOptions({"maxmin"})],
     }
 
     def __init__(self, n_components=2, *, metric=True, n_init=1,
                  max_iter=30, tol=1e-4, learning_rate_init="auto",
                  batch_size=None, dissimilarity="euclidean",
                  scheduler="exponential", scheduler_switch_ratio=0.5, epsilon=0.001,
-                 weighting="uniform", sampling_strategy="cycle", n_jobs=None, random_state=None):
+                 weighting="uniform", sampling_strategy="cycle",
+                 n_pivots="auto", pivot_strategy="maxmin",
+                 n_jobs=None, random_state=None):
         self.n_components = n_components
         self.metric = metric
         self.n_init = n_init
@@ -196,6 +204,8 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         self.epsilon = epsilon
         self.weighting = weighting
         self.sampling_strategy = sampling_strategy
+        self.n_pivots = n_pivots
+        self.pivot_strategy = pivot_strategy
         self.n_jobs = n_jobs
         self.random_state = random_state
 
@@ -348,6 +358,62 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         
         return w_min, w_max
     
+    def _resolve_n_pivots(self, n_samples):
+        if self.n_pivots == "auto":
+            k = min(50, max(self.n_components + 1, n_samples // 20))
+        else:
+            k = int(self.n_pivots)
+        if k <= self.n_components:
+            raise ValueError(
+                f"n_pivots ({k}) must be greater than n_components ({self.n_components})."
+            )
+        if k > n_samples:
+            raise ValueError(
+                f"n_pivots ({k}) must be <= n_samples ({n_samples})."
+            )
+        return k
+
+    def _select_pivots_maxmin(self, data, n_pivots, rng, is_lazy):
+        """
+        Greedy MaxMin (farthest-point) pivot selection.
+
+        Brandes & Pich (2007), §3.2. Provides a 2-approximation of k-center.
+
+        Parameters
+        ----------
+        data : ndarray
+            Either a feature matrix (n_samples, n_features) when ``is_lazy``,
+            or a precomputed dissimilarity matrix (n_samples, n_samples).
+        n_pivots : int
+        rng : RandomState
+        is_lazy : bool
+            If True, ``data`` is the feature matrix and per-pivot distances
+            are recomputed; otherwise ``data`` is the dissimilarity matrix.
+
+        Returns
+        -------
+        pivot_indices : ndarray of shape (n_pivots,), dtype int32
+        """
+        n_samples = data.shape[0]
+        pivots = np.empty(n_pivots, dtype=np.int32)
+        pivots[0] = rng.randint(n_samples)
+        min_dist = np.full(n_samples, np.inf, dtype=np.float64)
+
+        for k in range(n_pivots):
+            p = pivots[k] if k == 0 else pivots[k]
+            if is_lazy:
+                diff = data - data[p]
+                new_dists = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+            else:
+                new_dists = data[p].astype(np.float64, copy=False)
+
+            np.minimum(min_dist, new_dists, out=min_dist)
+
+            if k + 1 < n_pivots:
+                pivots[k + 1] = int(np.argmax(min_dist))
+
+        return pivots
+
     def _compute_full_stress(self, embedding, dissimilarity_matrix):
         dis = euclidean_distances(embedding, embedding)
         stress = 0.5 * np.sum((dis - dissimilarity_matrix) ** 2)
@@ -402,18 +468,50 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
         embedding = rng.standard_normal(size=(n_samples, self.n_components))
         embedding = np.ascontiguousarray(embedding, dtype=np.float64)
 
+        is_pivot = self.sampling_strategy == "pivot"
+        pivot_indices = None
+        if is_pivot:
+            n_pivots = self._resolve_n_pivots(n_samples)
+            is_lazy_input = self.dissimilarity == "lazy"
+            pivot_indices = self._select_pivots_maxmin(
+                X, n_pivots, rng, is_lazy=is_lazy_input
+            )
+            self.pivot_indices_ = pivot_indices
+
+        rows = None
+        cols = None
         if self.sampling_strategy == "cycle":
             rows, cols = np.triu_indices(n_samples, k=1)
             all_pairs_canonical = np.column_stack((rows, cols)).astype(np.int32)
+        elif is_pivot and self.dissimilarity in ["precomputed", "euclidean"]:
+            all_idx = np.arange(n_samples, dtype=np.int32)
+            rows_chunks = []
+            cols_chunks = []
+            for p in pivot_indices:
+                p_int = int(p)
+                mask = all_idx != p_int
+                i_arr = all_idx[mask]
+                j_arr = np.full(int(mask.sum()), p_int, dtype=np.int32)
+                rows_chunks.append(np.minimum(i_arr, j_arr))
+                cols_chunks.append(np.maximum(i_arr, j_arr))
+            rows_raw = np.concatenate(rows_chunks)
+            cols_raw = np.concatenate(cols_chunks)
+            # Deduplicate: pivot-pivot pairs appear once per endpoint pivot,
+            # so canonicalize (min,max) and take unique via int64 encoding.
+            encoded = rows_raw.astype(np.int64) * n_samples + cols_raw.astype(np.int64)
+            unique_enc = np.unique(encoded)
+            rows = (unique_enc // n_samples).astype(np.int32)
+            cols = (unique_enc % n_samples).astype(np.int32)
+            all_pairs_canonical = np.column_stack((rows, cols)).astype(np.int32)
         else:
             all_pairs_canonical = None
-        
+
         if self.dissimilarity in ["precomputed", "euclidean"]:
             if self.sampling_strategy == "random":
                 raise ValueError("sampling_strategy='random' is not supported with precomputed/euclidean "
                                  "dissimilarity because random access to weights/distances is inefficient. "
                                  "Use dissimilarity='lazy'.")
-            
+
             flat_distances = X[rows, cols].astype(np.float64)
             w_min, w_max, d_floor = self._compute_weight_bounds(X)
 
@@ -422,20 +520,31 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
                 flat_weights_canonical = 1.0 / (clipped_d ** 2)
             else:
                 flat_weights_canonical = np.ones(all_pairs_canonical.shape[0], dtype=np.float64)
-            
+
             is_lazy = False
 
         else: # self.dissimilarity == "lazy"
-            if all_pairs_canonical is None:
+            if all_pairs_canonical is not None:
+                sample_pairs = all_pairs_canonical
+            elif is_pivot:
+                # Sample pivot-pairs for weight bound estimation.
+                k = pivot_indices.shape[0]
+                size = min(1000, k * n_samples)
+                rand_i = rng.randint(0, n_samples, size=size)
+                rand_p_idx = rng.randint(0, k, size=size)
+                rand_j = pivot_indices[rand_p_idx].astype(np.int32, copy=False)
+                mask = rand_i != rand_j
+                sample_pairs = np.column_stack(
+                    (rand_i[mask].astype(np.int32, copy=False), rand_j[mask])
+                )
+            else:
                 dummy_rows = rng.randint(0, n_samples, size=1000)
                 dummy_cols = rng.randint(0, n_samples, size=1000)
                 mask = dummy_rows != dummy_cols # Filter out i=j
                 sample_pairs = np.column_stack((dummy_rows[mask], dummy_cols[mask])).astype(np.int32)
-            else:
-                sample_pairs = all_pairs_canonical
-            
+
             w_min, w_max = self._estimate_weight_bounds(X, sample_pairs, rng)
-            
+
             flat_distances = None
             flat_weights_canonical = None
             is_lazy = True
@@ -504,7 +613,7 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
 
                     denom = np.sum(target_canonical * target_canonical)
                     if denom > 0.0:
-                        target_canonical *= np.sqrt(n_pairs / denom)
+                        target_canonical *= np.sqrt(target_canonical.shape[0] / denom)
                 
                 pairs_epoch, target_epoch, weights_epoch = sklearn_shuffle(
                     all_pairs_canonical, target_canonical, flat_weights_canonical, random_state=rng
@@ -524,19 +633,33 @@ class SGDMDS(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstimator):
 
                 if not metric_mds:
                     x_knots, y_knots = self._fit_monotonic_map(embedding, X)
-                
+
                 current_seed = rng.randint(1, 2**31 - 1)
-                
-                run_sgd_epoch_lazy_random_native(
-                    embedding,
-                    X,
-                    n_pairs,
-                    lr,
-                    weighting_code,
-                    current_seed,
-                    x_knots=x_knots,
-                    y_knots=y_knots,
-                )
+
+                if is_pivot:
+                    n_updates = int(pivot_indices.shape[0]) * n_samples
+                    run_sgd_epoch_pivot_lazy(
+                        embedding,
+                        X,
+                        pivot_indices,
+                        n_updates,
+                        lr,
+                        weighting_code,
+                        current_seed,
+                        x_knots=x_knots,
+                        y_knots=y_knots,
+                    )
+                else:
+                    run_sgd_epoch_lazy_random_native(
+                        embedding,
+                        X,
+                        n_pairs,
+                        lr,
+                        weighting_code,
+                        current_seed,
+                        x_knots=x_knots,
+                        y_knots=y_knots,
+                    )
 
             t1 = time.time()
             cumulative_time += t1 - t0
