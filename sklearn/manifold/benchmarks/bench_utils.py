@@ -15,7 +15,13 @@ sys.path.insert(0, str(parent_dir.parent.parent))
 
 from sklearn.manifold import MDS as SMACOF_MDS
 try:
-    from sklearn.manifold._sgd_mds import SGDMDS
+    from sklearn.manifold._sgd_mds import (
+        SGDMDS,
+        _resolve_n_pivots,
+        _select_pivots_maxmin,
+        _maybe_pca_project,
+    )
+    from sklearn.manifold._pivot_mds import pivot_mds as _pivot_mds_fn
 except ImportError:
     print("Could not import SGDMDS from sklearn.manifold._sgd_mds.")
     print("Make sure you are running this from the benchmarks directory.")
@@ -221,15 +227,66 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
     }
 
 
+def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
+                                max_iter=30, switch_ratio=0.5, lr=0.5,
+                                epsilon=0.001):
+    """
+    Runs SGDMDS with sampling_strategy='random' at a fixed per-epoch budget.
+
+    n_updates_per_epoch: int (or 'auto' for the full-cycle default).
+    Used by Experiment I to characterise the stress / wall-time Pareto curve
+    of budgeted uniform random pair sampling.
+    """
+    budget_label = (
+        "auto" if n_updates_per_epoch == "auto" else f"b{n_updates_per_epoch}"
+    )
+    print(f"  [SGD-random-{budget_label}] Running on N={X.shape[0]}, "
+          f"max_iter={max_iter}...")
+
+    sgd = SGDMDS(
+        n_components=2,
+        metric=True,
+        n_init=1,
+        max_iter=max_iter,
+        learning_rate_init=lr,
+        scheduler="hybrid",
+        scheduler_switch_ratio=switch_ratio,
+        epsilon=epsilon,
+        dissimilarity="lazy",
+        sampling_strategy="random",
+        n_updates_per_epoch=n_updates_per_epoch,
+        random_state=random_state,
+        n_jobs=1,
+    )
+
+    t0 = time()
+    embedding = sgd.fit_transform(X)
+    total_time = time() - t0
+
+    return {
+        "algo": f"SGD-random-{budget_label}",
+        "embedding": embedding,
+        "stress": sgd.stress_,
+        "history": sgd.stress_history_,
+        "time": total_time,
+        "n_iter": sgd.n_iter_,
+        "n_updates_per_epoch": n_updates_per_epoch,
+    }
+
+
 def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=None,
-                        max_iter=30, switch_ratio=0.5, lr=0.5, epsilon=0.001):
+                        max_iter=30, switch_ratio=0.5, lr=0.5, epsilon=0.001,
+                        pivot_strategy="maxmin", pivot_pca_dim=30):
     """
     Runs SGDMDS with pivot sampling strategy.
     dissimilarity: 'lazy' or 'euclidean' (precomputed pivot pairs).
     n_pivots: int or 'auto'.
+    pivot_strategy: 'maxmin' or 'maxmin_pca'.
+    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
     """
     k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
-    print(f"  [SGD-pivot-{dissimilarity}-{k_label}] Running on N={X.shape[0]}...")
+    pca_tag = f"-pca{pivot_pca_dim}" if pivot_strategy == "maxmin_pca" else ""
+    print(f"  [SGD-pivot-{dissimilarity}{pca_tag}-{k_label}] Running on N={X.shape[0]}...")
 
     sgd = SGDMDS(
         n_components=2,
@@ -243,7 +300,8 @@ def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=N
         dissimilarity=dissimilarity,
         sampling_strategy="pivot",
         n_pivots=n_pivots,
-        pivot_strategy="maxmin",
+        pivot_strategy=pivot_strategy,
+        pivot_pca_dim=pivot_pca_dim,
         random_state=random_state,
         n_jobs=1,
     )
@@ -262,3 +320,151 @@ def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=N
         "n_iter": sgd.n_iter_,
         "n_pivots": actual_k,
     }
+
+
+def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
+                            pivot_strategy="maxmin", pivot_pca_dim=30):
+    """
+    Runs standalone Pivot MDS (Brandes & Pich, 2007) — no SGD.
+
+    Spectral baseline: select k pivots, then compute the embedding from a
+    single SVD on the centered N-by-k squared-distance matrix.
+
+    n_pivots: int or 'auto'.
+    pivot_strategy: 'maxmin' (raw farthest-point) or 'maxmin_pca' (farthest-
+        point in a PCA-reduced feature space).
+    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
+    """
+    strategy_tag = (
+        "maxmin" if pivot_strategy == "maxmin" else f"pca{pivot_pca_dim}"
+    )
+    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
+    print(f"  [PivotMDS-{strategy_tag}-{k_label}] Running on N={X.shape[0]}...")
+
+    rng = check_random_state(random_state)
+    n_samples = X.shape[0]
+    k_resolved = _resolve_n_pivots(n_pivots, 2, n_samples)
+
+    X64 = np.ascontiguousarray(X, dtype=np.float64)
+    if pivot_strategy == "maxmin_pca":
+        features_proj = _maybe_pca_project(X64, pivot_pca_dim, rng)
+        pivot_indices = _select_pivots_maxmin(
+            features_proj, k_resolved, rng, is_lazy=True,
+        )
+    else:
+        pivot_indices = _select_pivots_maxmin(
+            X64, k_resolved, rng, is_lazy=True,
+        )
+
+    t0 = time()
+    embedding, _ = _pivot_mds_fn(
+        X64, pivot_indices, n_components=2, metric="euclidean",
+    )
+    total_time = time() - t0
+
+    # Full N(N-1)/2 stress, for direct comparison with SGD results.
+    #
+    # Classical-MDS-family embeddings fit inner products (strain), not
+    # distances, so they come out at a stress-suboptimal global scale.
+    # SGD optimizes scale implicitly while minimizing stress, so an
+    # unscaled comparison overstates the spectral method's stress gap
+    # (by up to ~6x on the H datasets). The embedding is therefore
+    # rescaled by the closed-form stress-optimal factor
+    #     alpha = <D_emb, D> / <D_emb, D_emb>
+    # before stress is computed. The unscaled value is kept as
+    # "stress_raw" for reference.
+    from sklearn.metrics import euclidean_distances
+    D = euclidean_distances(X64, X64)
+    D_emb = euclidean_distances(embedding, embedding)
+    stress_raw = 0.5 * float(np.sum((D_emb - D) ** 2))
+    denom = float(np.sum(D_emb * D_emb))
+    alpha = float(np.sum(D_emb * D)) / denom if denom > 0.0 else 1.0
+    embedding = embedding * alpha
+    stress = 0.5 * float(np.sum((alpha * D_emb - D) ** 2))
+
+    return {
+        "algo": f"PivotMDS-{strategy_tag}-{k_label}",
+        "embedding": embedding,
+        "stress": stress,
+        "stress_raw": stress_raw,
+        "scale_alpha": alpha,
+        "history": [(total_time, stress)],
+        "time": total_time,
+        "n_iter": 0,
+        "n_pivots": int(pivot_indices.shape[0]),
+    }
+
+
+def run_hybrid_benchmark(X, n_pivots="auto", hybrid_alpha=0.5,
+                         random_state=None, max_iter=30, switch_ratio=0.5,
+                         lr=0.5, epsilon=0.001, pivot_strategy="maxmin",
+                         pivot_pca_dim=30):
+    """
+    Runs SGDMDS with hybrid (pivot + random) sampling — lazy mode only.
+
+    Per epoch, performs ``hybrid_alpha * k * N`` pivot updates and
+    ``(1 - hybrid_alpha) * k * N`` random updates, keeping the per-epoch
+    update budget equal to pure-pivot sampling.
+
+    n_pivots: int or 'auto'.
+    hybrid_alpha: float in [0, 1] — fraction of pivot updates per epoch.
+    pivot_strategy: 'maxmin' or 'maxmin_pca'.
+    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
+    """
+    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
+    pca_tag = f"-pca{pivot_pca_dim}" if pivot_strategy == "maxmin_pca" else ""
+    print(f"  [SGD-hybrid{pca_tag}-a{hybrid_alpha:.2f}-{k_label}] "
+          f"Running on N={X.shape[0]}...")
+
+    sgd = SGDMDS(
+        n_components=2,
+        metric=True,
+        n_init=1,
+        max_iter=max_iter,
+        learning_rate_init=lr,
+        scheduler="hybrid",
+        scheduler_switch_ratio=switch_ratio,
+        epsilon=epsilon,
+        dissimilarity="lazy",
+        sampling_strategy="hybrid",
+        n_pivots=n_pivots,
+        pivot_strategy=pivot_strategy,
+        pivot_pca_dim=pivot_pca_dim,
+        hybrid_alpha=hybrid_alpha,
+        random_state=random_state,
+        n_jobs=1,
+    )
+
+    t0 = time()
+    embedding = sgd.fit_transform(X)
+    total_time = time() - t0
+
+    actual_k = int(sgd.pivot_indices_.shape[0])
+    return {
+        "algo": f"SGD-hybrid-a{hybrid_alpha:.2f}-{k_label}",
+        "embedding": embedding,
+        "stress": sgd.stress_,
+        "history": sgd.stress_history_,
+        "time": total_time,
+        "n_iter": sgd.n_iter_,
+        "n_pivots": actual_k,
+        "hybrid_alpha": hybrid_alpha,
+    }
+
+
+def per_point_stress(embedding, dissimilarity_matrix):
+    """
+    Per-point raw stress contribution.
+
+    Returns an array of length n_samples where entry i is
+    ``sum_j (d_ij(emb) - delta_ij)^2`` (no 0.5 factor; this is the
+    sum of squared per-pair residuals incident to point i).
+
+    Used by the decisive Phase-2 plot: histogram of per-point stress,
+    colored by pivot vs non-pivot.
+    """
+    from sklearn.metrics import euclidean_distances
+    D_emb = euclidean_distances(embedding, embedding)
+    R = (D_emb - dissimilarity_matrix) ** 2
+    np.fill_diagonal(R, 0.0)
+    return R.sum(axis=1)
