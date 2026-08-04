@@ -1,0 +1,75 @@
+# Conda environment for building/running SGDMDS and its benchmarks
+# (sklearn/manifold/) on a new machine, e.g. a cluster node.
+#
+# Reverse-engineered from the local `sklearn-dev` conda env actually used
+# throughout this project's development and benchmarking (no environment.yml
+# / requirements.txt previously existed for it -- the repo's build_tools/
+# environment files are upstream scikit-learn's generic CI matrix, unrelated
+# to this fork's actual dependencies).
+#
+# What this covers:
+#   - the full C/C++/Fortran + OpenBLAS toolchain needed to compile the
+#     `_sgd_mds_cython` extension (conda-forge's compiler packages are
+#     portable across clusters that don't allow system package installs)
+#   - core scikit-learn runtime deps (numpy, scipy, joblib, threadpoolctl)
+#   - the build backend (meson, meson-python, ninja, cython)
+#   - benchmark/plotting deps (pandas, matplotlib) + test deps (pytest)
+#
+# What this does NOT cover (deliberately): huggingface `datasets`,
+# `huggingface_hub`, `pmlb`, `scanpy`/`anndata`, or any other
+# dataset-fetching library. Those were used (outside this environment,
+# provenance not tracked here) to build the .npy files under
+# benchmarks/datasets/hf_datasets_p1, hf_datasets_p2, pmlb_datasets,
+# scanpy_datasets -- but loading those already-materialized .npy files via
+# bench_utils.load_local_dataset only ever needs numpy. Don't install those
+# libraries unless you specifically need to regenerate a collection from
+# scratch.
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate sklearn-dev
+#   cd <repo-root>
+#   pip install -e . --no-build-isolation -v      # compiles the Cython ext
+#
+# Verify the build succeeded:
+#   python -c "from sklearn.manifold._sgd_mds_cython import \
+#       run_sgd_epoch, run_sgd_epoch_lazy_random_native, \
+#       run_sgd_epoch_pivot_lazy"
+#
+# Versions pinned to major.minor (matching what was actually used); left
+# unpinned at the patch level so conda can solve for the cluster's specific
+# architecture. Add matplotlib/seaborn only if you'll run the plotters --
+# pandas alone is enough for the run_experiment_*.py runners themselves.
+
+name: sklearn-dev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  # --- build toolchain for the Cython extension ---
+  - c-compiler
+  - cxx-compiler
+  - fortran-compiler
+  - meson=1.9
+  - meson-python=0.18
+  - ninja
+  - cython=3.2
+  # --- BLAS/LAPACK ---
+  - libblas
+  - libcblas
+  - liblapack
+  - libopenblas
+  # --- scikit-learn runtime deps ---
+  - numpy=2.3
+  - scipy=1.16
+  - joblib=1.5
+  - threadpoolctl=3.6
+  # --- benchmark / plotting / test deps ---
+  - pandas=3.0
+  # matplotlib-base (not `matplotlib`): our plotters only ever call
+  # fig.savefig(...), never plt.show() -- the full `matplotlib` package
+  # pulls in an entire Qt6/X11 GUI toolkit for interactive backends that a
+  # headless cluster node cannot use and does not need.
+  - matplotlib-base=3.10
+  - pytest=9.0
+  - pip
