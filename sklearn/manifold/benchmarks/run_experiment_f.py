@@ -117,8 +117,7 @@ def run_k_sweep(dataset_name: str) -> None:
                 histories[rid] = {"algo": algo, "k": k, "rep": rep,
                                   "history": _clean_history(r["history"])}
 
-            row_lazy = rows[-2]
-            row_euc  = rows[-1]
+            row_lazy, row_euc = rows[-2], rows[-1]
             print(f"    rep={rep} "
                   f"pivot-lazy stress={row_lazy['stress']:.2f} t={row_lazy['time_solver']:.2f}s  |  "
                   f"pivot-euc  stress={row_euc['stress']:.2f} t={row_euc['time_solver']:.2f}s")
