@@ -34,6 +34,37 @@ from sklearn.utils import resample, check_random_state
 # Path to: sklearn/manifold/benchmarks/datasets/
 DATASET_ROOT = current_dir / "datasets"
 
+
+def stress_exact_chunked(X, embedding, block_size=2048):
+    """Exact raw stress in O(N * block_size) memory (no full N x N matrix).
+
+    Computes ``0.5 * sum_{i,j} (d_ij(embedding) - delta_ij(X))**2`` -- the
+    same full-matrix convention as SGDMDS's internal ``_full_stress`` (both
+    (i,j) and (j,i) counted, diagonal zero), so values are directly
+    comparable with every previous experiment's ``stress``.
+
+    Row-block streaming: for each block of rows, build only the
+    (block x N) slices of the feature-space and embedding-space distance
+    matrices and accumulate. Removes the O(N^2) memory wall that capped
+    exact scoring at N=20,000 -- exact stress at N=100,000 needs ~2 GB of
+    transient buffers instead of two 80 GB matrices. Time is still O(N^2 D)
+    but BLAS-parallel and, in the optimized Experiment K protocol, excluded
+    from benchmark timings.
+    """
+    from sklearn.metrics import euclidean_distances
+
+    X = np.asarray(X, dtype=np.float64)
+    embedding = np.asarray(embedding, dtype=np.float64)
+    n = X.shape[0]
+    total = 0.0
+    for start in range(0, n, block_size):
+        stop = min(start + block_size, n)
+        d_x = euclidean_distances(X[start:stop], X)
+        d_e = euclidean_distances(embedding[start:stop], embedding)
+        d_e -= d_x
+        total += float(np.einsum("ij,ij->", d_e, d_e))
+    return 0.5 * total
+
 def generate_torus(n_samples=2000, R=1.0, r=0.4, noise=0.0, random_state=None):
     """
     Generates a synthetic Torus. Notorious for trapping MDS in folded minima.
@@ -193,9 +224,13 @@ def run_smacof_benchmark(X, dissimilarity="euclidean", random_state=None, max_it
 
 
 def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_iter=30,
-                      switch_ratio=0.5, lr=0.5, epsilon=0.001):
+                      switch_ratio=0.5, lr=0.5, epsilon=0.001, compute_stress=True):
     """
     Runs SGDMDS. Supports 'precomputed', 'euclidean', 'lazy'.
+
+    compute_stress=False skips all in-fit stress evaluation (the embedding is
+    identical); the caller scores the returned embedding externally (e.g.
+    stress_exact_chunked) and the returned "time" is then pure fit time.
     """
     print(f"  [SGD-{dissimilarity}] Running on N={X.shape[0]}...")
 
@@ -209,6 +244,7 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
         scheduler_switch_ratio=switch_ratio,
         epsilon=epsilon,
         dissimilarity=dissimilarity,
+        compute_stress=compute_stress,
         random_state=random_state,
         n_jobs=1
     )
@@ -229,13 +265,18 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
 
 def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
                                 max_iter=30, switch_ratio=0.5, lr=0.5,
-                                epsilon=0.001):
+                                epsilon=0.001, compute_stress=True):
     """
     Runs SGDMDS with sampling_strategy='random' at a fixed per-epoch budget.
 
     n_updates_per_epoch: int (or 'auto' for the full-cycle default).
     Used by Experiment I to characterise the stress / wall-time Pareto curve
     of budgeted uniform random pair sampling.
+
+    compute_stress=False skips all in-fit stress evaluation -- in lazy mode
+    that avoids materializing the full N x N distance matrix just for
+    scoring (the O(N*D) fast-mode memory promise then actually holds). The
+    caller scores externally; "time" is then pure fit time.
     """
     budget_label = (
         "auto" if n_updates_per_epoch == "auto" else f"b{n_updates_per_epoch}"
@@ -255,6 +296,7 @@ def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
         dissimilarity="lazy",
         sampling_strategy="random",
         n_updates_per_epoch=n_updates_per_epoch,
+        compute_stress=compute_stress,
         random_state=random_state,
         n_jobs=1,
     )
