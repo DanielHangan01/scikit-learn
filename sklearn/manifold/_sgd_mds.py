@@ -451,6 +451,19 @@ default='exponential'
         controlled stress cost. Must be ``"auto"`` for any other
         ``sampling_strategy`` (otherwise a ``ValueError`` is raised).
 
+    compute_stress : bool, default=True
+        Whether to evaluate raw stress during and after the fit. Stress is
+        purely observational -- no part of the optimization (scheduling,
+        stopping) depends on it -- but evaluating it exactly costs O(N^2)
+        time and memory (in lazy mode it materializes the full N x N
+        distance matrix), which can dominate the fit itself for the budgeted
+        fast mode. With ``False``, ``stress_`` is ``-1.0``,
+        ``stress_history_`` carries ``-1.0`` placeholders, and the returned
+        embedding is bit-identical to ``True`` (same seeds, same
+        trajectory). Requires ``n_init=1`` (best-of-n selection needs
+        stress). Intended for benchmarking at large N where stress is
+        computed externally (e.g. chunked or sampled).
+
     n_jobs : int, default=None
         Reserved for future parallelization; currently ignored.
 
@@ -531,6 +544,7 @@ default='exponential'
             Interval(Integral, 1, None, closed="left"),
             StrOptions({"auto"}),
         ],
+        "compute_stress": ["boolean"],
         "n_jobs": [Integral, None],
         "random_state": ["random_state"],
     }
@@ -556,6 +570,7 @@ default='exponential'
         pivot_pca_dim=30,
         hybrid_alpha=0.5,
         n_updates_per_epoch="auto",
+        compute_stress=True,
         n_jobs=None,
         random_state=None,
     ):
@@ -577,6 +592,7 @@ default='exponential'
         self.pivot_pca_dim = pivot_pca_dim
         self.hybrid_alpha = hybrid_alpha
         self.n_updates_per_epoch = n_updates_per_epoch
+        self.compute_stress = compute_stress
         self.n_jobs = n_jobs
         self.random_state = random_state
 
@@ -663,6 +679,12 @@ default='exponential'
                 "n_updates_per_epoch is only configurable for "
                 "sampling_strategy='random'; got "
                 f"sampling_strategy={self.sampling_strategy!r}."
+            )
+
+        if not self.compute_stress and self.n_init > 1:
+            raise ValueError(
+                "compute_stress=False requires n_init=1: selecting the best "
+                f"of n_init={self.n_init} runs needs their stress values."
             )
 
         solver_input = self._prepare_input(X)
@@ -839,10 +861,12 @@ default='exponential'
             run_sgd_epoch(embedding, target_epoch, weights_epoch, pairs_epoch, lr)
 
             cumulative_time += time.time() - t0
-            if n_samples <= 10000:
+            if self.compute_stress and n_samples <= 10000:
                 history.append(
                     (cumulative_time, _full_stress(embedding, dissimilarity_matrix))
                 )
+            elif not self.compute_stress:
+                history.append((cumulative_time, -1.0))
         return history
 
     @staticmethod
@@ -954,9 +978,11 @@ default='exponential'
                 )
 
             cumulative_time += time.time() - t0
-            if n_samples <= 10000:
+            if self.compute_stress and n_samples <= 10000:
                 D_temp = euclidean_distances(X, X)
                 history.append((cumulative_time, _full_stress(embedding, D_temp)))
+            elif not self.compute_stress:
+                history.append((cumulative_time, -1.0))
         return history
 
     @staticmethod
@@ -1029,11 +1055,16 @@ default='exponential'
     def _safe_stress(self, embedding, solver_input):
         """Compute stress, skipping for very large ``n_samples``.
 
-        The threshold is the module-level ``EXACT_STRESS_N_CAP`` (default
-        20,000) -- a memory/time safety guard, not a hard technical limit.
-        Raise it (``sklearn.manifold._sgd_mds.EXACT_STRESS_N_CAP = ...``)
-        on a machine with enough RAM to score larger fits exactly.
+        Returns ``-1.0`` without computing anything when
+        ``compute_stress=False`` (stress is observational only -- see the
+        parameter docs). Otherwise the threshold is the module-level
+        ``EXACT_STRESS_N_CAP`` (default 20,000) -- a memory/time safety
+        guard, not a hard technical limit. Raise it
+        (``sklearn.manifold._sgd_mds.EXACT_STRESS_N_CAP = ...``) on a
+        machine with enough RAM to score larger fits exactly.
         """
+        if not self.compute_stress:
+            return -1.0
         n_samples = embedding.shape[0]
         if n_samples > EXACT_STRESS_N_CAP:
             return -1.0
