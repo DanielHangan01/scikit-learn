@@ -35,6 +35,96 @@ from sklearn.utils import resample, check_random_state
 DATASET_ROOT = current_dir / "datasets"
 
 
+def stress_and_optimal_scale_chunked(X, embedding, block_size=2048):
+    """Exact stress + stress-optimal rescale, in O(N * block_size) memory.
+
+    Classical-MDS-family embeddings (Pivot MDS, ClassicalMDS) fit inner
+    products, not distances, so they land at a stress-suboptimal global
+    scale. The comparable-to-SGD number requires rescaling by the
+    closed-form optimum ``alpha = <D_emb, D> / <D_emb, D_emb>`` first.
+
+    Naively that needs two full N x N matrices (~40 GB at N=50,000). But
+    everything follows from three scalars, each accumulable over row
+    blocks:
+
+        S_ee = sum D_emb^2 ,  S_ed = sum D_emb * D ,  S_dd = sum D^2
+
+    giving, in closed form,
+
+        alpha         = S_ed / S_ee
+        stress_raw    = 0.5 * (S_ee - 2*S_ed + S_dd)
+        stress_scaled = 0.5 * (S_dd - S_ed^2 / S_ee)
+
+    so one blocked pass yields both stresses and the scale factor.
+
+    Returns ``(stress_scaled, stress_raw, alpha)``. Both stresses use the
+    full-matrix convention (both (i,j) and (j,i) counted), matching
+    SGDMDS's ``_full_stress`` and every other stress in these benchmarks.
+    """
+    from sklearn.metrics import euclidean_distances
+
+    X = np.asarray(X, dtype=np.float64)
+    embedding = np.asarray(embedding, dtype=np.float64)
+    n = X.shape[0]
+    S_ee = S_ed = S_dd = 0.0
+    for start in range(0, n, block_size):
+        stop = min(start + block_size, n)
+        d_x = euclidean_distances(X[start:stop], X)
+        d_e = euclidean_distances(embedding[start:stop], embedding)
+        S_ee += float(np.einsum("ij,ij->", d_e, d_e))
+        S_ed += float(np.einsum("ij,ij->", d_e, d_x))
+        S_dd += float(np.einsum("ij,ij->", d_x, d_x))
+    alpha = (S_ed / S_ee) if S_ee > 0.0 else 1.0
+    stress_raw = 0.5 * (S_ee - 2.0 * S_ed + S_dd)
+    stress_scaled = 0.5 * (S_dd - (S_ed * S_ed / S_ee)) if S_ee > 0.0 else stress_raw
+    return stress_scaled, stress_raw, alpha
+
+
+def stress_and_optimal_scale_chunked_multi(X, embeddings, block_size=2048):
+    """Batched version of :func:`stress_and_optimal_scale_chunked`.
+
+    Scores MANY embeddings of the same X in a single blocked pass. The
+    input-distance block ``d_x`` costs O(block * N * D) and is identical for
+    every embedding, while each embedding's own block costs only
+    O(block * N * n_components) -- so computing ``d_x`` once and reusing it
+    across m embeddings is ~m times cheaper than m separate calls whenever
+    D >> n_components.
+
+    Concretely, scoring 30 Pivot-MDS embeddings of a D=3072 dataset at
+    N=50,000 drops from ~26 minutes to ~1 minute.
+
+    Returns a list of ``(stress_scaled, stress_raw, alpha)``, one per input
+    embedding, in the order given.
+    """
+    from sklearn.metrics import euclidean_distances
+
+    X = np.asarray(X, dtype=np.float64)
+    embs = [np.asarray(e, dtype=np.float64) for e in embeddings]
+    n = X.shape[0]
+    m = len(embs)
+    S_ee = np.zeros(m)
+    S_ed = np.zeros(m)
+    S_dd = 0.0
+    for start in range(0, n, block_size):
+        stop = min(start + block_size, n)
+        d_x = euclidean_distances(X[start:stop], X)
+        S_dd += float(np.einsum("ij,ij->", d_x, d_x))
+        for t, e in enumerate(embs):
+            d_e = euclidean_distances(e[start:stop], e)
+            S_ee[t] += float(np.einsum("ij,ij->", d_e, d_e))
+            S_ed[t] += float(np.einsum("ij,ij->", d_e, d_x))
+    out = []
+    for t in range(m):
+        if S_ee[t] > 0.0:
+            alpha = S_ed[t] / S_ee[t]
+            scaled = 0.5 * (S_dd - S_ed[t] * S_ed[t] / S_ee[t])
+        else:
+            alpha, scaled = 1.0, 0.5 * S_dd
+        raw = 0.5 * (S_ee[t] - 2.0 * S_ed[t] + S_dd)
+        out.append((scaled, raw, alpha))
+    return out
+
+
 def stress_exact_chunked(X, embedding, block_size=2048):
     """Exact raw stress in O(N * block_size) memory (no full N x N matrix).
 
@@ -365,7 +455,8 @@ def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=N
 
 
 def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
-                            pivot_strategy="maxmin", pivot_pca_dim=30):
+                            pivot_strategy="maxmin", pivot_pca_dim=30,
+                            scoring_block_size=2048, score=True):
     """
     Runs standalone Pivot MDS (Brandes & Pich, 2007) — no SGD.
 
@@ -388,6 +479,15 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     k_resolved = _resolve_n_pivots(n_pivots, 2, n_samples)
 
     X64 = np.ascontiguousarray(X, dtype=np.float64)
+
+    # NOTE: pivot SELECTION is part of the algorithm's cost and must be
+    # timed. Greedy maxmin is O(k*N*D) and single-threaded, so it dominates:
+    # at N=50,000, D=784, k=200 it costs ~15 s against ~0.4 s for the
+    # (BLAS-parallel) spectral solve. An earlier version of this wrapper
+    # started the timer after selection and so under-reported total time by
+    # ~40x. `time` is now the full cost of producing an embedding;
+    # `time_pivot_selection` / `time_spectral` give the split.
+    t_sel0 = time()
     if pivot_strategy == "maxmin_pca":
         features_proj = _maybe_pca_project(X64, pivot_pca_dim, rng)
         pivot_indices = _select_pivots_maxmin(
@@ -397,12 +497,14 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
         pivot_indices = _select_pivots_maxmin(
             X64, k_resolved, rng, is_lazy=True,
         )
+    selection_time = time() - t_sel0
 
     t0 = time()
     embedding, _ = _pivot_mds_fn(
         X64, pivot_indices, n_components=2, metric="euclidean",
     )
-    total_time = time() - t0
+    spectral_time = time() - t0
+    total_time = selection_time + spectral_time
 
     # Full N(N-1)/2 stress, for direct comparison with SGD results.
     #
@@ -415,14 +517,38 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     #     alpha = <D_emb, D> / <D_emb, D_emb>
     # before stress is computed. The unscaled value is kept as
     # "stress_raw" for reference.
-    from sklearn.metrics import euclidean_distances
-    D = euclidean_distances(X64, X64)
-    D_emb = euclidean_distances(embedding, embedding)
-    stress_raw = 0.5 * float(np.sum((D_emb - D) ** 2))
-    denom = float(np.sum(D_emb * D_emb))
-    alpha = float(np.sum(D_emb * D)) / denom if denom > 0.0 else 1.0
+    # Computed in one row-blocked pass (O(N * block) memory) so this scales
+    # past N=20,000; the previous full-matrix version needed two N x N
+    # matrices (~40 GB at N=50,000). Scoring happens outside the timed
+    # region above, so `time` is pure solve time.
+    #
+    # score=False returns the UNSCALED embedding and no stress, for callers
+    # that will batch-score many embeddings of the same X together (see
+    # stress_and_optimal_scale_chunked_multi) -- far cheaper when D is large,
+    # since the input-distance blocks are then computed once, not once per fit.
+    if not score:
+        return {
+            "algo": f"PivotMDS-{strategy_tag}-{k_label}",
+            "embedding": embedding,
+            "stress": None,
+            "stress_raw": None,
+            "scale_alpha": None,
+            "history": [(total_time, None)],
+            "time": total_time,
+            "time_pivot_selection": selection_time,
+            "time_spectral": spectral_time,
+            "time_scoring": 0.0,
+            "n_iter": 0,
+            "n_pivots": int(pivot_indices.shape[0]),
+            "pivot_indices": pivot_indices,
+        }
+
+    t_score0 = time()
+    stress, stress_raw, alpha = stress_and_optimal_scale_chunked(
+        X64, embedding, block_size=scoring_block_size
+    )
+    scoring_time = time() - t_score0
     embedding = embedding * alpha
-    stress = 0.5 * float(np.sum((alpha * D_emb - D) ** 2))
 
     return {
         "algo": f"PivotMDS-{strategy_tag}-{k_label}",
@@ -432,8 +558,12 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
         "scale_alpha": alpha,
         "history": [(total_time, stress)],
         "time": total_time,
+        "time_pivot_selection": selection_time,
+        "time_spectral": spectral_time,
+        "time_scoring": scoring_time,
         "n_iter": 0,
         "n_pivots": int(pivot_indices.shape[0]),
+        "pivot_indices": pivot_indices,
     }
 
 

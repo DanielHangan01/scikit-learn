@@ -258,6 +258,45 @@ def plot_stress_vs_alpha(df: pd.DataFrame, dataset: str, ax=None):
         print(f"  wrote {out}.{{png,pdf}}")
 
 
+def plot_alpha_normalized(datasets, strategy="pca10"):
+    """All datasets on one axis, stress normalized by each one's own cycle.
+
+    The per-dataset grid plots raw stress, whose scale differs by orders of
+    magnitude between datasets, so it needs one panel each. Dividing by each
+    dataset's own SGD-cycle median puts them on a shared axis: y is then
+    "times worse than a full sweep", which is the quantity the pivot result is
+    actually about, and the whole comparison fits in a single figure.
+    """
+    fig, ax = plt.subplots(figsize=(7, 4.6))
+    cmap = plt.get_cmap("tab10").colors
+    for i, ds in enumerate(sorted(datasets)):
+        df = load(ds)
+        hy = df[(df["phase"] == "hyb") & (df["pivot_strategy"] == strategy)]
+        base = df[df["phase"] == "base"]
+        if hy.empty or base.empty:
+            continue
+        cyc = base[base["algo"] == "SGD-cycle"]["stress"].median()
+        if not (cyc > 0):
+            continue
+        agg = (hy.groupby("alpha")["stress"].median() / cyc).sort_index()
+        ax.plot(agg.index, agg.values, "-o", lw=2, color=cmap[i % len(cmap)],
+                label=ds)
+    ax.axhline(1.0, ls="--", color="black", lw=1.3,
+               label="full sweep (=1.0)")
+    ax.set_yscale("log")
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_xlabel(r"$\alpha$ — fraction of the budget allocated to pivot pairs")
+    ax.set_ylabel("final stress / full-sweep stress (log)")
+    # No title: the interpretation belongs in the paper's caption.
+    ax.legend(loc="upper left", fontsize=9, ncol=2)
+    COMBINED_DIR.mkdir(parents=True, exist_ok=True)
+    out = COMBINED_DIR / "alpha_normalized"
+    fig.tight_layout()
+    fig.savefig(str(out) + ".png"); fig.savefig(str(out) + ".pdf")
+    plt.close(fig)
+    print(f"  wrote {out}.{{png,pdf}}")
+
+
 # ──────────────────────────────────────────────
 # combined (3-column) grids
 # ──────────────────────────────────────────────
@@ -412,6 +451,7 @@ def run(datasets: List[str]):
     _grid(datasets, plot_baseline_vs_k, "combined_stress_baseline_vs_k")
     _grid(datasets, plot_stress_vs_lr,  "combined_stress_vs_lr")
     _grid(datasets, plot_stress_vs_alpha, "combined_stress_vs_alpha")
+    plot_alpha_normalized(datasets)
 
 
 if __name__ == "__main__":
