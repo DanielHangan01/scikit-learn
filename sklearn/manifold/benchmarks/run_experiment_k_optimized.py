@@ -78,7 +78,7 @@ from bench_utils import (
 )
 from run_experiment_j import intrinsic_dim_measures
 
-RESULTS_DIR = Path(__file__).parent / "results" / "experiment_k_optimized"
+RESULTS_DIR = Path(__file__).parent / "results" / "experiment_k_optimized_studentvm"
 
 # Same 8 sources as plain K (see run_experiment_k.py for provenance/roles).
 DATASETS = [
