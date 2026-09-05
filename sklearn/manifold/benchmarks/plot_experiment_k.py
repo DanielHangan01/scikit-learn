@@ -402,15 +402,21 @@ def plot_speedup_vs_D(datasets, k_ref=50):
     _save(fig, COMBINED_DIR / "speedup_vs_D")
 
 
-def plot_budget_summary(datasets, k_ref=200):
-    """Quality and speed side by side at one budget -- the paper figure.
+def plot_budget_summary(datasets, k_ref=200, stacked=False):
+    """Quality and speed together at one budget -- the paper figure.
 
     The two standalone plots each need a legend naming eight sources, which
-    dominates them at single-column width. Pairing them lets one legend serve
-    both and states the whole result in one place: at fixed k the overhead is
-    flat in N (left) while the speedup climbs linearly (right).
+    dominates them on its own. Pairing them lets one legend serve both and
+    states the whole result in one place: at fixed k the overhead is flat in
+    N while the speedup climbs linearly.
+
+    `stacked` puts the panels one above the other for a single-column figure;
+    the default places them side by side for a full-width one.
     """
-    fig, (ax_q, ax_s) = plt.subplots(1, 2, figsize=(11.5, 4.2))
+    if stacked:
+        fig, (ax_q, ax_s) = plt.subplots(2, 1, figsize=(6.4, 7.4))
+    else:
+        fig, (ax_q, ax_s) = plt.subplots(1, 2, figsize=(11.5, 4.2))
     rows = []
     for ds in datasets:
         df, meta = load(ds)
@@ -436,7 +442,8 @@ def plot_budget_summary(datasets, k_ref=200):
                       + (f", N≤{max(Ns):,}" if short else ""))
 
     ax_q.axhline(1.0, ls=":", color="black", lw=1.2)
-    ax_q.set_ylabel(f"stress overhead  (budget / full sweep)")
+    ax_q.set_ylabel("stress overhead" if stacked
+                    else "stress overhead  (budget / full sweep)")
     # Neutral descriptors only -- the interpretation belongs in the caption.
     ax_q.set_title(f"(a) stress overhead at $k={k_ref}$")
 
@@ -449,7 +456,8 @@ def plot_budget_summary(datasets, k_ref=200):
         handles.append(ref); labels.append("∝ N (reference slope)")
     ax_s.axhline(1.0, ls=":", color="black", lw=1.0)
     ax_s.set_yscale("log")
-    ax_s.set_ylabel("measured speedup vs full sweep (log)")
+    ax_s.set_ylabel("speedup (log)" if stacked
+                    else "measured speedup vs full sweep (log)")
     ax_s.set_title(f"(b) measured speedup at $k={k_ref}$")
 
     for ax in (ax_q, ax_s):
@@ -465,11 +473,14 @@ def plot_budget_summary(datasets, k_ref=200):
     key_h, = ax_q.plot([], [], "--", color="black", lw=2)
     handles += [key_r, key_h]
     labels += ["responsive ($\\mathrm{strain}_2 \\geq 0.22$)", "hard middle"]
-    fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=9,
-               frameon=False, bbox_to_anchor=(0.5, -0.02))
-    fig.tight_layout(rect=(0, 0.19, 1, 1.0))
+    ncol = 1 if stacked else 3
+    fig.legend(handles, labels, loc="lower center", ncol=ncol,
+               fontsize=8 if stacked else 9, frameon=False,
+               bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout(rect=(0, 0.24 if stacked else 0.19, 1, 1.0))
     COMBINED_DIR.mkdir(parents=True, exist_ok=True)
-    out = COMBINED_DIR / f"budget_summary_k{k_ref}"
+    out = COMBINED_DIR / (f"budget_summary_k{k_ref}"
+                          + ("_stacked" if stacked else ""))
     fig.savefig(str(out) + ".png"); fig.savefig(str(out) + ".pdf")
     plt.close(fig); print(f"  wrote {out}.{{png,pdf}}")
 
@@ -669,6 +680,7 @@ def main():
             plot_speedup_vs_N(datasets, k_ref=k_ref)  # and N sets how far it goes
             plot_overhead_vs_N_single_k(datasets, k_ref=k_ref)
             plot_budget_summary(datasets, k_ref=k_ref)  # both, paired
+            plot_budget_summary(datasets, k_ref=k_ref, stacked=True)
 
 
 if __name__ == "__main__":
