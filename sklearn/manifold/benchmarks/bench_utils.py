@@ -567,6 +567,99 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     }
 
 
+def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
+                            stop_exaggeration=0.6, metric="euclidean",
+                            init="pca", momentum=0.0, lr_decay="geometric",
+                            max_step_frac=1.0, random_state=None,
+                            scoring_block_size=2048, score=True,
+                            record_loss=False):
+    """
+    Runs standalone SQuaD-MDS (Lambert et al., 2022) — no SGD-MDS involved.
+
+    A *stochastic quartet* baseline: each iteration partitions the points
+    into random disjoint quartets and follows the gradient of a per-quartet
+    cost over sum-normalized ("relative") distances. O(N*D) per iteration,
+    no distance matrix.
+
+    THE EMBEDDING HAS NO MEANINGFUL GLOBAL SCALE. The optimized cost
+    normalizes both the high-dimensional and the embedding distances of each
+    quartet by their own sum, so it is invariant to a global rescale — the
+    method imposes no scale constraint by design (paper §2.2). Scoring raw
+    stress on the returned coordinates would measure an arbitrary scale, so
+    the closed-form stress-optimal factor alpha = <D_emb,D>/<D_emb,D_emb> is
+    applied first, exactly as for the classical-MDS family in
+    run_pivot_mds_benchmark. `stress` is the rescaled (comparable) number;
+    `stress_raw` and `scale_alpha` are also returned.
+
+    Note this rescale is a WEAKER repair here than for Pivot MDS: SQuaD-MDS
+    normalizes PER QUARTET, not globally, so a single global alpha need not
+    be able to undo it. Watch `scale_alpha`'s spread across seeds.
+
+    max_step_frac is a trust region on the per-iteration point displacement,
+    guarding the O(lr / S) gradient blow-up that duplicate points cause (see
+    sklearn/manifold/_squad_mds.py). It is swept, not fixed, because it
+    changes results on the 7 collection datasets that carry duplicates;
+    `clip_frac` in the returned dict reports how often it fired, and is
+    0.000 on clean data, where the guard is provably inert.
+
+    score=False returns the UNSCALED embedding and no stress, for callers
+    batching many embeddings of the same X through
+    stress_and_optimal_scale_chunked_multi.
+    """
+    from sklearn.manifold._squad_mds import squad_mds
+
+    exa_tag = f"-exa{stop_exaggeration:g}" if exaggerate_d else ""
+    label = f"SQuaD-MDS-i{n_iter}-lr{lr:g}{exa_tag}"
+    print(f"  [{label}] Running on N={X.shape[0]}...")
+
+    X64 = np.ascontiguousarray(X, dtype=np.float64)
+
+    # PCA initialisation is part of the algorithm as the authors publish it
+    # (their main.py does it before the timer, but it is not free at large
+    # N*D), so it is inside the timed region. `time_init` gives the split.
+    t0 = time()
+    embedding, info = squad_mds(
+        X64, n_components=2, n_iter=n_iter, lr=lr,
+        exaggerate_d=exaggerate_d, stop_exaggeration=stop_exaggeration,
+        metric=metric, init=init, momentum=momentum, lr_decay=lr_decay,
+        max_step_frac=max_step_frac, random_state=random_state,
+        record_loss=record_loss,
+    )
+    total_time = time() - t0
+
+    result = {
+        "algo": label,
+        "embedding": embedding,
+        "history": [(total_time, None)],
+        "time": total_time,
+        "n_iter": info["n_iter"],
+        "n_quartets": info["n_quartets"],
+        "n_clipped": info["n_clipped"],
+        "clip_frac": info["n_clipped"] / max(info["n_point_steps"], 1),
+        "loss_history": info["loss_history"],
+        "stress": None,
+        "stress_raw": None,
+        "scale_alpha": None,
+        "time_scoring": 0.0,
+    }
+    if not score:
+        return result
+
+    t_score0 = time()
+    stress, stress_raw, alpha = stress_and_optimal_scale_chunked(
+        X64, embedding, block_size=scoring_block_size
+    )
+    result.update({
+        "embedding": embedding * alpha,
+        "stress": stress,
+        "stress_raw": stress_raw,
+        "scale_alpha": alpha,
+        "history": [(total_time, stress)],
+        "time_scoring": time() - t_score0,
+    })
+    return result
+
+
 def run_hybrid_benchmark(X, n_pivots="auto", hybrid_alpha=0.5,
                          random_state=None, max_iter=30, switch_ratio=0.5,
                          lr=0.5, epsilon=0.001, pivot_strategy="maxmin",
