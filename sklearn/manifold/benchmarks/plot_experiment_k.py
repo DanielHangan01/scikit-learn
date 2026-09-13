@@ -462,7 +462,7 @@ def plot_budget_summary(datasets, k_ref=200, stacked=False):
 
     for ax in (ax_q, ax_s):
         ax.set_xscale("log")
-        ax.set_xticks([10000, 20000, 35000, 50000])
+        ax.set_xticks([10000, 20000, 35000, 50000, 75000, 100000])
         ax.set_xticklabels(["10k", "20k", "35k", "50k"])
         ax.minorticks_off()
         ax.set_xlabel("N (subsample size, log)")
@@ -520,7 +520,7 @@ def plot_overhead_vs_N_single_k(datasets, k_ref=200):
                 label=f"{ds.replace('_', ' ')} (strain={st:.2f})")
     ax.axhline(1.0, ls=":", color="black", lw=1.2, label="full cycle (=1.0)")
     ax.set_xscale("log")
-    ax.set_xticks([10000, 20000, 35000, 50000])
+    ax.set_xticks([10000, 20000, 35000, 50000, 75000, 100000])
     ax.set_xticklabels(["10,000", "20,000", "35,000", "50,000"])
     ax.minorticks_off()
     ax.set_xlabel("N (subsample size, log)")
@@ -575,7 +575,7 @@ def plot_speedup_vs_N(datasets, k_ref=200):
                 label="∝ N (reference slope)")
     ax.axhline(1.0, ls=":", color="black", lw=1.0)
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xticks([10000, 20000, 35000, 50000])
+    ax.set_xticks([10000, 20000, 35000, 50000, 75000, 100000])
     ax.set_xticklabels(["10,000", "20,000", "35,000", "50,000"])
     ax.minorticks_off()
     ax.set_xlabel("N (subsample size, log)")

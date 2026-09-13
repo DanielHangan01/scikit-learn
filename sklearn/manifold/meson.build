@@ -21,3 +21,12 @@ py.extension_module(
   subdir: 'sklearn/manifold',
   install: true
 )
+
+py.extension_module(
+  '_squad_mds_cython',
+  cython_gen.process('_squad_mds_cython.pyx'),
+  dependencies: [np_dep],
+  cython_args: cython_args,
+  subdir: 'sklearn/manifold',
+  install: true
+)

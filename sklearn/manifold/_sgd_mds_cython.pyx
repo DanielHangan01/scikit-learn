@@ -164,9 +164,14 @@ cpdef void run_sgd_epoch(
     target_distances, weights)`` together before each call to retain SGD
     randomness.
     """
-    cdef int k, i, j, d
-    cdef int n_pairs = pairs.shape[0]
-    cdef int n_components = embedding.shape[1]
+    # Py_ssize_t, not int: the cycle pair list is N(N-1)/2 entries, which
+    # passes 2**31-1 at N = 65,537. A 32-bit counter there makes the loop
+    # bound negative and the epoch a silent no-op. Py_ssize_t rather than
+    # long because long is 32 bits on Windows (LLP64); it is also the type
+    # of .shape[], so no conversion happens.
+    cdef Py_ssize_t k, i, j, d
+    cdef Py_ssize_t n_pairs = pairs.shape[0]
+    cdef Py_ssize_t n_components = embedding.shape[1]
 
     cdef double dist, delta, move_mag, diff_val, ratio, w_ij, mu
 
@@ -207,7 +212,7 @@ cpdef void run_sgd_epoch(
 cpdef void run_sgd_epoch_lazy_random_native(
     double[:, ::1] embedding,        # (n_samples, n_components), in-place
     double[:, ::1] X_original,       # (n_samples, n_features)
-    long n_updates,                  # number of (i, j) draws this epoch
+    Py_ssize_t n_updates,            # number of (i, j) draws this epoch
     double lr,
     int weighting_code,              # 1 => inverse, 0 => uniform
     cn.uint32_t seed,
@@ -220,7 +225,7 @@ cpdef void run_sgd_epoch_lazy_random_native(
     applies one update via :c:func:`_lazy_sgd_step`.
     """
     cdef:
-        long k
+        Py_ssize_t k
         int i, j
         int n_samples = X_original.shape[0]
         int n_features = X_original.shape[1]
@@ -259,7 +264,7 @@ cpdef void run_sgd_epoch_pivot_lazy(
     double[:, ::1] embedding,        # (n_samples, n_components), in-place
     double[:, ::1] X_original,       # (n_samples, n_features)
     cn.int32_t[::1] pivot_indices,   # (n_pivots,)
-    long n_updates,                  # typically n_pivots * n_samples
+    Py_ssize_t n_updates,            # typically n_pivots * n_samples
     double lr,
     int weighting_code,
     cn.uint32_t seed,
@@ -273,7 +278,7 @@ cpdef void run_sgd_epoch_pivot_lazy(
     ``O(k * n_samples)`` pairs per epoch instead of ``O(n_samples^2)``.
     """
     cdef:
-        long k_iter
+        Py_ssize_t k_iter
         int i, j, p_idx
         int n_samples = X_original.shape[0]
         int n_features = X_original.shape[1]
