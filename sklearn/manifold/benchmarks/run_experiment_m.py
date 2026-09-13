@@ -20,10 +20,11 @@ about the objective. Whether that costs anything *in stress* is the question.
 
 TWO SUITES (choose with --suite), exactly as Experiment L:
 
-  j18  the 18-dataset benchmark collection, at Experiment J's top N-rung,
-       reusing J's subsample convention (seed 42+rep -> the same 5
-       subsamples). Comparable to J's SGD-cycle and budgeted numbers at the
-       same (N, seed) without re-running any SGD.
+  j18  the 18-dataset benchmark collection, each at its FULL N (which is
+       also Experiment J's top rung), reusing J's subsample convention
+       (seed 42+rep). Comparable to J's SGD-cycle and budgeted numbers at
+       the same (N, seed) without re-running any SGD. At full N there is no
+       subsample to draw, so all 5 seeds share one X and score together.
 
   k8   the 8 large sources on the Experiment-K-optimized ladder
        {10k, 20k, 35k, 50k}, reusing that experiment's single fixed
@@ -212,8 +213,15 @@ def run_dataset(dataset: str, suite: str, grid: Dict[str, list]) -> None:
     N_full, D = X_full.shape
 
     if suite == "j18":
-        # Experiment J's top rung for this dataset (NOT necessarily full N).
-        rungs = [j_make_ladder(N_full)[-1]]
+        # The dataset's FULL N -- which is also Experiment J's top rung, since
+        # j_make_ladder now always ends there. Stated directly rather than
+        # derived, so the two cannot drift apart silently.
+        rungs = [N_full]
+        assert j_make_ladder(N_full)[-1] == N_full, (
+            f"{dataset}: Experiment J's top rung "
+            f"({j_make_ladder(N_full)[-1]}) is not full N ({N_full}); the two "
+            f"experiments would no longer join."
+        )
     else:
         rungs = KO.make_ladder(N_full)
 

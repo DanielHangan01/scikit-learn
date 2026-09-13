@@ -46,8 +46,11 @@ its own subsample; the anchor comparison is across that difference).
 MEMORY: the cycle FIT is the only large-memory phase (~36 N^2 bytes: matrix
 + explicit pair list + per-pair arrays + shuffle copies; calibrated to
 N=20k, extrapolated above -- see run_experiment_k.py). Scoring no longer
-adds an N x N matrix, and budget fits are O(N*D). MAX_MEM_GB gates cycle
-fits only; a gated rung is skipped whole (no baseline -> no overhead).
+adds an N x N matrix, and budget fits are O(N*D). CYCLE_MAX_N and
+MAX_MEM_GB gate the CYCLE ARM ONLY -- the budgeted arm still runs on a
+gated rung, since it has no O(N^2) phase. Such a rung therefore has no
+cycle denominator: no overhead ratio and no k* there, but full wall-time
+scaling and cross-method (Pivot MDS / SQuaD-MDS) comparison.
 
 Usage:
     python run_experiment_k_optimized.py                      # all DATASETS
@@ -92,13 +95,34 @@ DATASETS = [
     "mnist_digits",        # D=784   strain 0.12  N_full= 70,000
 ]
 
-# 10,000 = overlap anchor with plain K; the rest are new territory.
-# Capped at 50,000: the cycle baseline's fit needs ~36*N^2 bytes, so 50k is
-# ~84 GB peak -- a realistic cluster-node budget -- while 70k (~164 GB) and
-# 100k (~335 GB) are not. Sources larger than 50k (fashion_mnist_full,
-# mnist_digits at 70k; feynman/patchcamelyon/ag_news/tiny_imagenet at 100k)
-# are subsampled to 50k at the top rung.
-N_LADDER = [10000, 20000, 35000, 50000]
+# 10,000 = overlap anchor with plain K; the rest are new territory. The top
+# two rungs (70k, 100k) are BUDGET-ONLY -- see CYCLE_MAX_N below. 70,000 is
+# a shared absolute rung, so it is also the true full N of fashion_mnist_full
+# and mnist_digits -- those two now reach full N instead of stopping at 50k.
+N_LADDER = [10000, 20000, 35000, 50000, 70000, 100000]
+
+# ---------------------------------------------------------------------------
+# Largest N the CYCLE baseline is attempted at. This is a MEMORY/TIME policy,
+# not a correctness limit: the cycle fit needs ~36*N^2 bytes (84 GB at 50k,
+# 164 GB at 70k, 335 GB at 100k) and its wall time grows as
+# N^2 (~4,200 s per fit at 50k, so ~4.7 h at 100k). Raise it if your node has
+# the RAM -- 70,000 unlocks fashion_mnist_full and mnist_digits at their true
+# full N, which is the next worthwhile step up.
+#
+# It used to also be a correctness ceiling: `run_sgd_epoch` held its pair
+# count in a 32-bit int, and the cycle pair list passes 2^31-1 at N = 65,537,
+# after which the loop bound went negative and the epoch became a SILENT
+# no-op. The kernel now counts in Py_ssize_t, so that ceiling is gone --
+# but the extension must be rebuilt for the fix to take effect (see
+# CLAUDE.md section 5).
+#
+# The BUDGETED arm has no such limit at all: O(N*D) memory, O(k*N*D) time,
+# Py_ssize_t counters. So rungs above this threshold still run budget-only;
+# the rung is not skipped wholesale just because cycle cannot run on it.
+# Consequence: above CYCLE_MAX_N there is no cycle denominator, so overhead
+# ratios and k* are undefined. Those rungs measure wall-time scaling and
+# cross-method comparison, not overhead-vs-cycle.
+CYCLE_MAX_N = 50_000
 
 K_VALUES = [50, 100, 200, 400]
 
@@ -124,12 +148,14 @@ TARGETS = [1.05, 1.10, 1.15]
 
 
 def make_ladder(N_full: int) -> List[int]:
-    """Ladder rungs <= full N, capped at N_LADDER[-1] (the 50k cap).
+    """Ladder rungs <= full N, capped at N_LADDER[-1] (100,000).
 
     A source whose full N fits under the cap gets its true full N as the top
     rung: replacing the nearest rung when within 5% (california_housing's
     20,640 replaces the 20,000 rung -- same cost, whole dataset) or appended
-    otherwise. Sources above the cap are subsampled to the capped ladder.
+    otherwise. 70,000 is itself a ladder rung, so fashion_mnist_full and
+    mnist_digits land on their true full N exactly. Sources above the cap
+    (none currently) would be subsampled to the capped ladder.
     """
     rungs = [n for n in N_LADDER if n <= N_full]
     if not rungs:
@@ -234,15 +260,34 @@ def run_dataset(dataset: str) -> None:
 
     for max_iter in MAX_ITER_VALUES:
         for N in ladder:
+            # The cycle arm is gated independently of the rung: it is the only
+            # arm with an O(N^2) footprint, so a rung it cannot run is still
+            # perfectly good for the budgeted arm. (Previously a
+            # memory-skipped rung dropped the budget runs too.)
             est_gb = _estimate_cycle_peak_gb(N)
-            if MAX_MEM_GB is not None and est_gb > MAX_MEM_GB:
-                print(f"\n  --- max_iter={max_iter}  N={N:,}  SKIPPED: "
-                      f"est. cycle peak ~{est_gb:.1f} GB > "
-                      f"MAX_MEM_GB={MAX_MEM_GB:g} ---")
+            cycle_blocked = None
+            if N > CYCLE_MAX_N:
+                cycle_blocked = (
+                    f"N > CYCLE_MAX_N={CYCLE_MAX_N:,}: the cycle fit would "
+                    f"need ~{est_gb:.0f} GB and ~{4200 * (N / 50000) ** 2:,.0f} s "
+                    f"per seed (raise CYCLE_MAX_N if the node has the RAM)"
+                )
+            elif MAX_MEM_GB is not None and est_gb > MAX_MEM_GB:
+                cycle_blocked = (
+                    f"est. cycle peak ~{est_gb:.1f} GB > "
+                    f"MAX_MEM_GB={MAX_MEM_GB:g}"
+                )
+                # Recoverable on a larger node, so withhold meta.json and let
+                # a re-run resume. The int32 ceiling is structural, not a
+                # resource limit, so it must NOT withhold meta forever.
                 any_mem_skipped = True
-                continue
+
             ks = valid_k(N)
             print(f"\n  --- max_iter={max_iter}  N={N:,}  (k in {ks}) ---")
+            if cycle_blocked:
+                print(f"      cycle arm SKIPPED -- {cycle_blocked}")
+                print(f"      budget arm runs; this rung has no cycle "
+                      f"denominator (no overhead ratio, no k*)")
 
             # One fixed subsample per (dataset, N), shared by every arm.
             if N < N_full:
@@ -272,6 +317,8 @@ def run_dataset(dataset: str) -> None:
                                    r["time"], t_score, stress)
 
             for rep in range(N_CYCLE_REPEATS):
+                if cycle_blocked:
+                    break
                 seed = SEED_BASE + rep
                 if (max_iter, N, "cycle", -1, seed) in done:
                     print(f"    cycle seed={seed}: already done, skip")

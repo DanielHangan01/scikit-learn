@@ -67,7 +67,8 @@ ALL_DATASETS = [
 ]
 
 # Shared absolute N rungs so any common rung can be compared across datasets.
-# Each dataset uses the rungs <= its full N, plus its full N as the top rung.
+# Each dataset uses the rungs <= its full N; the top rung is always its full
+# N (see make_ladder), so no dataset is silently truncated.
 BASE_LADDER = [400, 600, 900, 1350, 2000, 3000, 4000, 5000]
 
 # Budget grid (n_updates_per_epoch = k * N), filtered to k < (N-1)/2 per rung.
@@ -91,11 +92,26 @@ ID_SEED = 0
 
 
 def make_ladder(N_full: int) -> List[int]:
+    """Shared rungs <= N_full, with the top rung ALWAYS the dataset's full N.
+
+    A source whose full N sits just above a ladder rung has that rung
+    *replaced* by its true full N rather than being truncated to it (same
+    cost, whole dataset); otherwise full N is appended as a further rung.
+    This is the convention Experiment K-optimized already uses.
+
+    The previous rule appended full N only when the top rung was below
+    0.95*N_full, which silently truncated the two datasets that fall inside
+    that window -- bank ran at 2,000 of 2,059 points and hiva at 3,000 of
+    3,076. Nothing else in the collection changes.
+    """
     rungs = [n for n in BASE_LADDER if n <= N_full]
     if not rungs:
-        rungs = [N_full]
-    if rungs[-1] < N_full * 0.95:
-        rungs.append(N_full)
+        return [N_full]
+    if N_full not in rungs:
+        if N_full < 1.05 * rungs[-1]:
+            rungs[-1] = N_full
+        else:
+            rungs.append(N_full)
     return rungs
 
 
