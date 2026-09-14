@@ -47,12 +47,18 @@ THREE THINGS THAT MATTER FOR CORRECTNESS
    plain Experiment K.
 
 3. THE GRID IS SWEPT IN SQuaD-MDS'S FAVOUR. The authors' default
-   (exaggerate_d=True, lr=550, n_iter=1000) is tuned for RNX, and our
-   validation found it is NOT the stress-optimal setting -- exaggeration
-   costs stress while helping RNX. Reporting only the authors' default would
-   understate the baseline, so both settings are swept and the results doc
-   reports the best, as Experiment L did by giving Pivot MDS its best k and
-   best selection strategy.
+   (exaggerate_d=True, lr=550, n_iter=1000) is tuned for RNX -- the metric
+   their paper reports -- and our validation found it is NOT the
+   stress-optimal setting. On coil20 (n_iter=1000, lr=550) the two metrics
+   move in opposite directions: RNX AUC 0.389 with exaggeration vs 0.331
+   without, while stress is 1.25x SGD-cycle with vs 1.07x without.
+
+   Reporting only the authors' default would understate the baseline, so
+   BOTH settings are swept and the results doc reports the best -- the same
+   principle as Experiment L giving Pivot MDS its best k and best selection
+   strategy. Sweeping also turns the observation above into a measured
+   result across all 26 datasets rather than a single-dataset anecdote,
+   which is what the write-up needs to claim it.
 
 NOTE ON THE COMPARISON TO SGD: SQuaD-MDS gets a PCA initialisation (the
 authors' choice and part of their published method), while our SGD arms use
@@ -103,12 +109,22 @@ SCORING_BLOCK = 2048
 # it), so the ladder doubles as a Pareto curve against budgeted SGD rather
 # than just a search for the best value.
 #
+# The ladder was EXTENDED after the first full run, which found every single
+# best config in both suites sitting at the old ceiling (2000 on j18, 1000 on
+# k8) with quality still improving there -- so those results were lower bounds
+# on SQuaD-MDS's quality and upper bounds on its speedup. A targeted sweep on
+# mnist_digits confirmed the headroom is real and not a learning-rate artifact:
+# 1.69x -> 1.57x -> 1.47x at n_iter 1000 -> 2000 -> 4000, flat across
+# lr in {550 .. 6000}. See EXPERIMENT_M_RESULTS.md section 5.1.
+#
 # lr: the reference reports 50-1500 as reasonable when the initial embedding
 # has std 10, which _squad_mds.py reproduces; 550 is its default.
 #
 # exaggerate_d: squared HD distances for the first 60% of iterations. The
-# reference's main.py turns this ON; validation found it helps RNX and hurts
-# stress, so it is swept, never assumed.
+# reference's main.py turns this ON, but it is an RNX-oriented choice that
+# costs stress (coil20: 1.25x cycle with, 1.07x without), so it is swept,
+# never assumed -- see point 3 of the module docstring. Pin it with
+# `--exaggerate false` to halve the suite once the sweep has settled it.
 #
 # j18 is cheap (N <= 5,750) so it carries the full cross, including the
 # init control. k8 is ~100x more expensive per fit, so it runs the lean grid
@@ -124,7 +140,7 @@ SCORING_BLOCK = 2048
 # records when it was active. `None` is the reference's exact behaviour.
 
 GRID_J18 = {
-    "n_iter": [100, 250, 500, 1000, 2000],
+    "n_iter": [100, 250, 500, 1000, 2000, 4000, 8000],
     "lr": [150.0, 550.0, 1500.0],
     "exaggerate_d": [False, True],
     "init": ["pca", "random"],
@@ -132,7 +148,7 @@ GRID_J18 = {
 }
 
 GRID_K8 = {
-    "n_iter": [100, 250, 500, 1000],
+    "n_iter": [100, 250, 500, 1000, 2000, 4000],
     "lr": [550.0],
     "exaggerate_d": [False, True],
     "init": ["pca"],
