@@ -40,6 +40,7 @@ from ..utils.validation import check_array, check_symmetric, validate_data
 try:
     from ._sgd_mds_cython import (
         run_sgd_epoch,
+        run_sgd_epoch_lazy_blocked,
         run_sgd_epoch_lazy_random_native,
         run_sgd_epoch_pivot_lazy,
     )
@@ -343,6 +344,16 @@ def _estimate_weight_bounds(X, sample_pairs, weighting, rng, n_samples_est=1000)
 # itself (O(N*D) memory) -- only whether its resulting stress can be scored.
 EXACT_STRESS_N_CAP = 20_000
 
+# Research switch: route plain random pair sampling (block_size=2, random,
+# sequential) through the blocked kernel instead of the original one. The
+# embedding is bit-identical either way (tests/test_blocked_sgdmds.py); only
+# the kernel's implementation differs. The original kernel pays a GIL
+# round-trip per pair update (Cython's exception check after each
+# `_lazy_sgd_step` call, which is not `noexcept`), so this isolates what
+# blocking buys from what that fix alone buys. Left False, every earlier
+# experiment reruns on exactly the code it was timed with.
+FORCE_BLOCKED_KERNEL = False
+
 
 def _full_stress(embedding, dissimilarity_matrix):
     """Raw MDS stress: ``0.5 * sum_{i,j} (d_ij(emb) - delta_ij)^2``."""
@@ -450,6 +461,32 @@ default='exponential'
         for a small ``k`` performs far fewer updates per epoch at a
         controlled stress cost. Must be ``"auto"`` for any other
         ``sampling_strategy`` (otherwise a ``ValueError`` is raised).
+        Always counted in pair updates, whatever ``block_size`` is.
+
+    block_size : int, default=2
+        Experimental. Points per sampled block for
+        ``sampling_strategy='random'``. Each block updates all
+        ``block_size * (block_size - 1) / 2`` pairs among its points, and
+        their feature-space distances are computed from one read of the
+        block's rows, so memory traffic per pair falls as
+        ``2 / (block_size - 1)``. The default, 2, is ordinary random pair
+        sampling. The objective and the per-pair update are unchanged.
+
+    block_sampling : {'random', 'partition'}, default='random'
+        Experimental. How blocks are drawn. ``'random'`` draws each block's
+        points
+        independently (with replacement), so every pair in a block is an
+        ordinary uniform random pair. ``'partition'`` shuffles all points
+        and cuts the permutation into disjoint blocks, as SQuaD-MDS does,
+        so every point is visited equally often.
+
+    block_update : {'sequential', 'sum', 'mean'}, default='sequential'
+        Experimental. How a block's pair updates are applied.
+        ``'sequential'`` applies each pair's step immediately (the rule
+        used for single pairs). ``'sum'`` computes every step from the
+        block's starting positions and applies their per-point sum once.
+        ``'mean'`` does the same but divides by the number of pairs each
+        point took part in.
 
     compute_stress : bool, default=True
         Whether to evaluate raw stress during and after the fit. Stress is
@@ -544,6 +581,9 @@ default='exponential'
             Interval(Integral, 1, None, closed="left"),
             StrOptions({"auto"}),
         ],
+        "block_size": [Interval(Integral, 2, None, closed="left")],
+        "block_sampling": [StrOptions({"random", "partition"})],
+        "block_update": [StrOptions({"sequential", "sum", "mean"})],
         "compute_stress": ["boolean"],
         "n_jobs": [Integral, None],
         "random_state": ["random_state"],
@@ -570,6 +610,9 @@ default='exponential'
         pivot_pca_dim=30,
         hybrid_alpha=0.5,
         n_updates_per_epoch="auto",
+        block_size=2,
+        block_sampling="random",
+        block_update="sequential",
         compute_stress=True,
         n_jobs=None,
         random_state=None,
@@ -592,6 +635,9 @@ default='exponential'
         self.pivot_pca_dim = pivot_pca_dim
         self.hybrid_alpha = hybrid_alpha
         self.n_updates_per_epoch = n_updates_per_epoch
+        self.block_size = block_size
+        self.block_sampling = block_sampling
+        self.block_update = block_update
         self.compute_stress = compute_stress
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -681,6 +727,13 @@ default='exponential'
                 f"sampling_strategy={self.sampling_strategy!r}."
             )
 
+        if self._is_blocked() and self.sampling_strategy != "random":
+            raise ValueError(
+                "block_size, block_sampling and block_update are only "
+                "configurable for sampling_strategy='random'; got "
+                f"sampling_strategy={self.sampling_strategy!r}."
+            )
+
         if not self.compute_stress and self.n_init > 1:
             raise ValueError(
                 "compute_stress=False requires n_init=1: selecting the best "
@@ -688,6 +741,11 @@ default='exponential'
             )
 
         solver_input = self._prepare_input(X)
+        if self._is_blocked() and self.block_size > solver_input.shape[0]:
+            raise ValueError(
+                f"block_size={self.block_size} exceeds "
+                f"n_samples={solver_input.shape[0]}."
+            )
         rng = check_random_state(self.random_state)
 
         best_stress = np.inf
@@ -940,6 +998,21 @@ default='exponential'
             n_pivot_updates = int(round(self.hybrid_alpha * total_updates))
             n_random_updates = total_updates - n_pivot_updates
 
+        # Point-blocked sampling. The default (2, random, sequential) keeps
+        # the original random kernel, so earlier runs reproduce exactly --
+        # timings included. The blocked kernel matches it bit for bit at
+        # that setting anyway (tests/test_blocked_sgdmds.py); neither path
+        # draws anything extra from ``rng``.
+        use_blocked = self._is_blocked() or (
+            FORCE_BLOCKED_KERNEL and not (is_hybrid or is_pivot)
+        )
+        if use_blocked:
+            block_partition = self.block_sampling == "partition"
+            block_update_code = {"sequential": 0, "sum": 1, "mean": 2}[
+                self.block_update
+            ]
+            block_perm = np.arange(n_samples, dtype=np.int32)
+
         for epoch in range(self.max_iter):
             t0 = time.time()
             lr = scheduler.get_rate(epoch)
@@ -970,6 +1043,12 @@ default='exponential'
                     embedding, X, pivot_indices, n_updates, lr,
                     weighting_code, seed_epoch,
                     x_knots=x_knots, y_knots=y_knots,
+                )
+            elif use_blocked:
+                run_sgd_epoch_lazy_blocked(
+                    embedding, X, n_pairs, self.block_size, block_partition,
+                    block_update_code, lr, weighting_code, seed_epoch,
+                    block_perm, x_knots=x_knots, y_knots=y_knots,
                 )
             else:
                 run_sgd_epoch_lazy_random_native(
@@ -1034,6 +1113,14 @@ default='exponential'
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _is_blocked(self):
+        """Whether any block parameter differs from plain pair sampling."""
+        return (self.block_size, self.block_sampling, self.block_update) != (
+            2,
+            "random",
+            "sequential",
+        )
 
     def _make_scheduler(self, w_min, w_max):
         """Build the learning-rate scheduler for the current run."""

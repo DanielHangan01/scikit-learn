@@ -22,6 +22,7 @@ try:
         _maybe_pca_project,
     )
     from sklearn.manifold._pivot_mds import pivot_mds as _pivot_mds_fn
+    import sklearn.manifold._sgd_mds as _sgd_mds_module
 except ImportError:
     print("Could not import SGDMDS from sklearn.manifold._sgd_mds.")
     print("Make sure you are running this from the benchmarks directory.")
@@ -355,7 +356,10 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
 
 def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
                                 max_iter=30, switch_ratio=0.5, lr=0.5,
-                                epsilon=0.001, compute_stress=True):
+                                epsilon=0.001, compute_stress=True,
+                                block_size=2, block_sampling="random",
+                                block_update="sequential",
+                                force_blocked_kernel=False):
     """
     Runs SGDMDS with sampling_strategy='random' at a fixed per-epoch budget.
 
@@ -367,10 +371,22 @@ def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
     that avoids materializing the full N x N distance matrix just for
     scoring (the O(N*D) fast-mode memory promise then actually holds). The
     caller scores externally; "time" is then pure fit time.
+
+    block_size / block_sampling / block_update: point-blocked sampling
+    (Experiment N). The defaults run the original random-pair kernel, and
+    the label is unchanged for them, so every earlier caller is untouched.
+    force_blocked_kernel=True runs the defaults through the blocked kernel
+    instead (same embedding, different implementation; see
+    _sgd_mds.FORCE_BLOCKED_KERNEL).
     """
     budget_label = (
         "auto" if n_updates_per_epoch == "auto" else f"b{n_updates_per_epoch}"
     )
+    if (block_size, block_sampling, block_update) != (2, "random",
+                                                       "sequential"):
+        budget_label += f"-m{block_size}-{block_sampling}-{block_update}"
+    elif force_blocked_kernel:
+        budget_label += "-blockedkernel"
     print(f"  [SGD-random-{budget_label}] Running on N={X.shape[0]}, "
           f"max_iter={max_iter}...")
 
@@ -386,14 +402,22 @@ def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
         dissimilarity="lazy",
         sampling_strategy="random",
         n_updates_per_epoch=n_updates_per_epoch,
+        block_size=block_size,
+        block_sampling=block_sampling,
+        block_update=block_update,
         compute_stress=compute_stress,
         random_state=random_state,
         n_jobs=1,
     )
 
-    t0 = time()
-    embedding = sgd.fit_transform(X)
-    total_time = time() - t0
+    previous = _sgd_mds_module.FORCE_BLOCKED_KERNEL
+    _sgd_mds_module.FORCE_BLOCKED_KERNEL = bool(force_blocked_kernel)
+    try:
+        t0 = time()
+        embedding = sgd.fit_transform(X)
+        total_time = time() - t0
+    finally:
+        _sgd_mds_module.FORCE_BLOCKED_KERNEL = previous
 
     return {
         "algo": f"SGD-random-{budget_label}",
