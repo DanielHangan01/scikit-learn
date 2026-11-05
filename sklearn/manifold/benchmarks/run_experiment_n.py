@@ -127,14 +127,14 @@ GRID_J18 = {
     "m": [2, 4, 8, 16],
     "sampling": ["random", "partition"],
     "update": ["sequential", "sum", "mean"],
-    "k": [25, 50, 100, 200],
+    "k": [25, 50, 100, 200, 400],
 }
 
 GRID_K8 = {
     "m": [2, 4, 8],
     "sampling": ["random", "partition"],
     "update": ["sequential"],
-    "k": [100, 200],
+    "k": [100, 200, 400],
 }
 
 SUITES = {
