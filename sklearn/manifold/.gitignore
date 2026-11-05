@@ -1,0 +1,6 @@
+# Research data: large, and deliberately not in git
+/benchmarks/datasets/
+/benchmarks/results/
+/benchmarks/results_*/
+/tests/benchmarks/
+/tests/datasets/
