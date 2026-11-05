@@ -11,7 +11,8 @@
 #   - the full C/C++/Fortran + OpenBLAS toolchain needed to compile the
 #     `_sgd_mds_cython` extension (conda-forge's compiler packages are
 #     portable across clusters that don't allow system package installs)
-#   - core scikit-learn runtime deps (numpy, scipy, joblib, threadpoolctl)
+#   - core scikit-learn runtime deps (numpy, scipy, joblib, narwhals,
+#     threadpoolctl)
 #   - the build backend (meson, meson-python, ninja, cython)
 #   - benchmark/plotting deps (pandas, matplotlib) + test deps (pytest)
 #
@@ -53,7 +54,7 @@ dependencies:
   - meson=1.9
   - meson-python=0.18
   - ninja
-  - cython=3.2
+  - cython>=3.2,<3.2.6  # upstream's pyproject.toml excludes 3.2.6+
   # --- BLAS/LAPACK ---
   - libblas
   - libcblas
@@ -63,6 +64,7 @@ dependencies:
   - numpy=2.3
   - scipy=1.16
   - joblib=1.5
+  - narwhals>=2.0.1
   - threadpoolctl=3.6
   # --- benchmark / plotting / test deps ---
   - pandas=3.0

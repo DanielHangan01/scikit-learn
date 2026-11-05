@@ -49,23 +49,24 @@ SGDMDS init is random unless the T3 pilot changes it.
 
 ### 2.1 SMACOF configuration
 
-**Which defaults count as "shipped" is a moving target.** This fork is at
-1.8.dev0 (fork point 2025-11-24). Per `_mds.py`, `n_init` goes 4 → 1 in 1.9 and
-`init` goes `'random'` → `'classical_mds'` in 1.10. Check the current upstream
-release before freezing (§10); the "1.8" label below may need renaming.
+**Base:** `research/sgd-mds` is rebased on upstream `main` at 1.10.dev0
+(`3c5e5effc`, 2026-11-04). SMACOF's code there matches release 1.9.1 apart from a
+docs line, so the paper can cite 1.9.1. Re-check this before submission, because
+1.10 may have shipped by then.
 
 | Arm | Settings | Why |
 |---|---|---|
-| Legacy default | `init='random'`, `n_init=4` | What users have had |
-| Single run | `init='random'`, `n_init=1` | Like-for-like with one SGD run |
-| Classical init | `init='classical_mds'` (`n_init` is ignored) | The future default, and the one maintainers will compare against |
-| **Long run** | Single-run arm with `max_iter=3000`; 3 seeds | See below |
+| Default | `init='random'`, `n_init=1` | The 1.9.1 behaviour, and like-for-like with one SGD run. Pass `init` explicitly: the default still warns |
+| Classical init | `init='classical_mds'` | Planned default for 1.10, and the one maintainers will compare against |
+| **Long run** | Default arm with `max_iter=3000`; 3 seeds | See below |
 
-All arms use `eps=1e-6`, `max_iter=300` unless stated, `metric_mds=True`,
-`metric='euclidean'`, `normalized_stress=False`, `n_jobs=1`, on features.
+All arms use `n_init=1`, `eps=1e-6`, `max_iter=300` unless stated,
+`metric_mds=True`, `metric='euclidean'`, `normalized_stress=False`, `n_jobs=1`, on
+features.
 
 **Experiment A's SMACOF is not the default one.** `run_smacof_benchmark` sets
-`eps=1e-12`, so every run in A used all 300 iterations. Replaying sklearn's
+`eps=1e-12`, so every run in A used all 300 iterations (its `n_init=1` with random
+init does match today's default). Replaying sklearn's
 stopping rule at `eps=1e-6` over A's saved histories (17 datasets, medians over
 20 seeds, denominator from the saved embedding, so approximate) gives:
 
@@ -118,13 +119,13 @@ bitwise; §11 covers the reproduction check.
 
 | Arm | Grid |
 |---|---|
-| SMACOF | The four arms of §2.1 |
+| SMACOF | The three arms of §2.1 |
 | Full SGDMDS | Golden config |
 | Budgeted | k ∈ {50, 100, 200, 400}, with k < (N−1)/2 |
 | Blocked | Same k |
 | SQuaD-MDS | T4 config × `n_iter` ∈ {250, 500, 1000, 2000, 4000, 8000}, plus authors' default |
 
-About 3,300 fits. Budgeting isn't expected to be faster below N≈1,500. The paper
+About 3,100 fits. Budgeting isn't expected to be faster below N≈1,500. The paper
 should show that rather than hide it.
 
 ---
@@ -141,7 +142,7 @@ should show that rather than hide it.
 | Budgeted | k ∈ {100, 200, 400} | 5 |
 | Blocked | Same k | 5 |
 | SQuaD-MDS | T4 config × `n_iter` ∈ {250, 500, 1000, 2000, 4000}, plus authors' default | 5 |
-| **SMACOF bridge** | Single-run and classical-init arms at N=10k only | 3 |
+| **SMACOF bridge** | Default and classical-init arms at N=10k only | 3 |
 
 The bridge turns "SMACOF is too slow here" into a measurement and connects the two
 suites. About 1,900 fits.
@@ -182,8 +183,7 @@ its arrays alone are tens of GB. Under 1 h.
 
 SMACOF already has it: this fork's `_mds.py` records `(elapsed, stress)` every
 iteration and exposes `stress_history_`. That is the exact stress SMACOF computes
-anyway, so it costs nothing and needs no instrumented copy. With `n_init=4` it
-holds only the best restart, while `time_fit` covers all four.
+anyway, so it costs nothing and needs no instrumented copy.
 
 SGDMDS and SQuaD-MDS **save a copy of the embedding** at each snapshot and score
 it after the fit. A copy costs O(N), so timing is barely touched; the hook times
@@ -254,7 +254,9 @@ dataset checksums. Final embeddings are saved for seed 42, for embedding figures
 ## 8. Reused without rerunning
 
 These are stress-only claims, and stress reproduces across machines to 8.6e-12 for
-budgeted fits:
+budgeted fits. The upstream rebase didn't disturb them: all 26 scaled datasets, and
+exact fit outputs for full, budgeted and blocked SGDMDS, SQuaD-MDS, Pivot MDS and
+SMACOF on coil20, are bit-identical between 1.8.dev0 and 1.10.dev0.
 
 | Claim | Source |
 |---|---|
@@ -292,33 +294,33 @@ Nothing below is started. It all stays in `sklearn/manifold/`.
 
 **Algorithm freeze (before the harness):**
 
-1. Rebase on current upstream, or decide not to (§13). It decides which MDS
-   defaults exist and what the PR is built on.
-2. `noexcept` on `_lazy_sgd_step`, `xorshift32` and `_interp_isotonic`. Verify that
+1. `noexcept` on `_lazy_sgd_step`, `xorshift32` and `_interp_isotonic`. Verify that
    no `__Pyx_ErrOccurredWithGIL` follows the lazy calls in the generated C, and that
    the microbenchmark shows the original kernel ≈ blocked m=2.
-3. Move research-only code out of the estimator: pivot, hybrid, partition, sum and
+2. Move research-only code out of the estimator: pivot, hybrid, partition, sum and
    mean updates, `FORCE_BLOCKED_KERNEL`.
-4. Final public parameter names and defaults, including init if T3 supports it.
-5. Private snapshot hooks in `SGDMDS` (not constructor parameters) and in
+3. Final public parameter names and defaults, including init if T3 supports it.
+4. Private snapshot hooks in `SGDMDS` (not constructor parameters) and in
    `squad_mds`.
-6. Golden fixtures stay bit-identical. Tag the commit.
+5. Golden fixtures stay bit-identical. Sync with upstream again if it has moved
+   meaningfully, then tag the commit.
 
 **Harness:**
 
-7. Update `run_smacof_benchmark`: it passes the deprecated `dissimilarity` and a
-   boolean `metric`, and hard-codes `eps=1e-12` and `n_init=1`.
-8. Thread limits around every fit in `bench_utils.py`.
-9. Scorer: exact with cached input distances, fixed-pair estimate, and the exact
+6. Update `run_smacof_benchmark`: it passes the deprecated `dissimilarity` and a
+   boolean `metric` (support is due to be dropped in 1.10), and hard-codes
+   `eps=1e-12` and `n_init=1`.
+7. Thread limits around every fit in `bench_utils.py`.
+8. Scorer: exact with cached input distances, fixed-pair estimate, and the exact
    final score.
-10. `run_experiment_o.py` and `run_experiment_p.py` on a shared harness: per-fit
-    resume, fingerprint, and a results root from `SGDMDS_RESULTS_ROOT`, so
-    `results/` is never touched.
-11. Microbenchmark arms (§6), plotters for the new tree, and a comparison script
+9. `run_experiment_o.py` and `run_experiment_p.py` on a shared harness: per-fit
+   resume, fingerprint, and a results root from `SGDMDS_RESULTS_ROOT`, so
+   `results/` is never touched.
+10. Microbenchmark arms (§6), plotters for the new tree, and a comparison script
     for §11.
 
-**Not for the PR:** this fork's `stress_history_` patch to `_mds.py` (commit
-`40a98a0a5`) changes `smacof`'s return values. Keep it in the research branch.
+**Not for the PR:** this fork's `stress_history_` patch to `_mds.py` changes
+`smacof`'s return values. Keep it in the research branch.
 
 ---
 
@@ -351,7 +353,7 @@ After it:
 | 2 | Freeze and harness (§10) | Laptop | — | — |
 | 3 | Setup: rsync, build, checksums, smoke test | Cluster | — | — |
 | 4 | Microbenchmark and contention calibration | Cluster | ~1 | 3 GB+ (§6) |
-| 5 | O | Cluster | 25–45 | ~5 GB |
+| 5 | O | Cluster | 12–25 | ~5 GB |
 | 6 | P | Cluster | ~55 | **~100 GB** at 50k full; ~16 GB otherwise |
 | 7 | P extension (optional) | Cluster | ~15 | 10 GB; ~190 GB for 70k full |
 | 8 | Checks, plots, results docs | Laptop | — | — |
@@ -402,7 +404,7 @@ Job scripts wait for the cluster details (§13).
 
 Recommendations in bold.
 
-1. **SMACOF arms:** **all four of §2.1**, or fewer?
+1. **SMACOF arms:** **all three of §2.1**, or fewer?
 2. **orl:** **drop it and explain why in the data section** (360 all-zero rows leave
    41 distinct points), as you suggested. Workshop counts of "18 datasets" then
    differ from the extended paper's, which the text should note.
@@ -412,8 +414,6 @@ Recommendations in bold.
 6. **Seeds:** **10 for O; 5 for P, with full SGDMDS at 1 (3 at 10k).**
 7. **Fig. 3 (runtime vs N):** **replace it** with P's speedup-vs-N plot and O's
    SMACOF times, or rerun B?
-8. **Rebase before the freeze?** **Yes**, unless it turns out to be expensive: the
-   timed code should be the PR candidate, and the fork is about a year old.
 
 Cluster details needed:
 
