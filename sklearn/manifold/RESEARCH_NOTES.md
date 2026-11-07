@@ -165,7 +165,7 @@ Other documents:
 - `REPORT_BUDGETED_SGD_MDS.md`: self-contained supervisor report, current as of
   K-optimized.
 - `PAPER_REVISION_PLAN.md`: paper edits. Parts are outdated; see `STATUS.md` §2.
-- `EXPERIMENT_O_P_SPEC.md`: proposed reporting runs for the paper. Not yet run.
+- `EXPERIMENT_O_P_SPEC.md`: reporting runs for the paper (O, P, Q). Not yet run.
 
 ---
 
