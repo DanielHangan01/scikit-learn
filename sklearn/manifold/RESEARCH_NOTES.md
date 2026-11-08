@@ -7,7 +7,8 @@ this file only summarises them.
 
 **Speed figures below predate the `noexcept` fix and come from different
 machines.** Stress figures don't have this problem: budgeted fits reproduced
-across machines to 8.6e-12.
+across machines to 8.6e-12. Parameter names below are the ones used at the time;
+the estimator now follows `MDS` (see `EXPERIMENT_O_P_SPEC.md` §10).
 
 ---
 
@@ -72,9 +73,10 @@ Measured speedup at N=50,000, k=200, ≈+1% overhead: **267× (D=3) · 25× (D=5
 delays the win rather than capping it. Quoting k=50's speed next to k=200's
 quality was a real error made earlier in this project.
 
-Most of the 52 ns intercept is the GIL overhead (§1.8). Once that is fixed, the
-laptop numbers predict an intercept near 17 ns, a crossover near D≈100 and about
-3× larger low-D speedups. These are predictions, not measurements.
+Most of the 52 ns intercept is the GIL overhead (§1.8). After the fix, a laptop
+check at N=20,000 measured 8.8 ns per update at D=3, 32 ns at D=64 and 870 ns at
+D=784. That suggests a crossover near D≈100 and more than 3× larger low-D speedups,
+but the new cost model has to be measured on the cluster.
 
 ### 1.5 The two speed levers do not compose
 
@@ -123,8 +125,9 @@ in N); what the regime controls is the achievable **floor**.
 - **Blocking** with sequential updates costs no stress and is 3–4.5× faster at
   N=50k. At k=200 it has 7% lower stress than SQuaD-MDS's best at 2.7× its time
   (11.2× with the original kernel).
-- **GIL finding:** `_lazy_sgd_step` isn't `noexcept`, costing ~35 ns per update:
-  3.3× on a small k=200 fit, with a bit-identical embedding. Blocking alone gives
+- **GIL finding (now fixed):** `_lazy_sgd_step` wasn't `noexcept`, costing ~35 ns
+  per update: 3.3× on a small k=200 fit, with a bit-identical embedding. Blocking
+  alone gave
   ~1.4× at low D and 3.1–3.7× at high D; quoting blocked times against the
   original kernel credits blocking with the fix.
 - **Open hypothesis:** SQuaD-MDS's PCA init may explain why it needs fewer pairs.
@@ -258,10 +261,10 @@ The arc:
   spectral solve*, not from anchor structure. SGD has no such generalization
   mechanism, so pivot-restricted gradients leave non-pivot geometry unenforced.
 
-**Kept in the tree** for reproducibility of F/G/H, **not** for the PR:
-`sampling_strategy ∈ {'pivot','hybrid'}`, `pivot_strategy`, `pivot_pca_dim`,
-`hybrid_alpha`, and `_pivot_mds.py`. `'hybrid'` reuses both lazy kernels
-back-to-back; no third kernel was needed.
+**Removed from the estimator** in the freeze: `sampling_strategy ∈
+{'pivot','hybrid'}`, `pivot_strategy`, `pivot_pca_dim` and `hybrid_alpha`. To
+reproduce F/G/H, check out the tag `pre-upstream-sync`. `_pivot_mds.py` stays for
+the Pivot MDS baseline.
 
 **One trap worth knowing:** classical-MDS-family embeddings fit inner products,
 not distances, so they land at a stress-suboptimal *scale*. Always apply the
@@ -279,10 +282,9 @@ published small-k claim replicates; the pivots were never the problem.
 
 - `load_local_dataset(name)`: loads from `datasets/` or generates synthetic
   (`s_curve`, `swiss_roll`, `torus`); applies `StandardScaler`.
-- `run_sgd_benchmark`, `run_random_budget_benchmark`, `run_pivot_benchmark`,
-  `run_hybrid_benchmark`, `run_pivot_mds_benchmark`, `run_squad_mds_benchmark`:
-  return `{"embedding", "stress", "history", "time", "n_iter", ...}`, with
-  `history` as `[(cumulative_time, stress), ...]`.
+- `run_sgd_benchmark`, `run_random_budget_benchmark`, `run_pivot_mds_benchmark`,
+  `run_squad_mds_benchmark`: return `{"embedding", "stress", "history", "time",
+  "n_iter", ...}`. `history` is empty for SGDMDS since the freeze; use `_epoch_hook`.
 - `run_pivot_mds_benchmark` applies the stress-optimal rescale and times pivot
   selection plus spectral solve; selection dominates (§1.6).
 - `stress_exact_chunked(X, embedding, block_size=2048)`: exact O(N·block) scorer,
@@ -296,8 +298,8 @@ published small-k claim replicates; the pivots were never the problem.
   so scoring m embeddings costs ~1/m of m separate calls when D ≫ n_components.
 - `per_point_stress`.
 
-`_safe_stress` also skips above the module-level `EXACT_STRESS_N_CAP` (default
-20,000; a safety guard the K runners raise). BLAS multithreading affects only the
+The final stress is also skipped above the module-level `EXACT_STRESS_N_CAP`
+(default 20,000; a safety guard the K runners raise). BLAS multithreading affects only the
 matrix build and the external scorer, together <1% of a cycle fit when threaded.
 
 ### Plotting K-optimized
@@ -356,9 +358,14 @@ initial stress before aggregation). K adds two cross-dataset figures:
 
 - Export `SGDMDS` from `sklearn/manifold/__init__.py`.
 - Module-level `smacof`-equivalent function (optional).
-- Changelog + `doc/` narrative entry, including `n_updates_per_epoch` and
-  `compute_stress`.
-- Validate the budget knob under **non-metric** (`metric=False`) MDS. Never
+- Changelog + `doc/` narrative entry, including `n_updates_per_epoch`,
+  `block_size` and `compute_stress`.
+- Remove the `_epoch_hook` attribute, or replace it with `sklearn.callback`, which
+  upstream's `LogisticRegression` already uses.
+- `stress_ = -1.0` as a "not computed" sentinel isn't sklearn style, and the kernels
+  use their own xorshift rather than `sklearn.utils._random.our_rand_r` (which masks
+  the top bit, so switching changes the random stream).
+- Validate the budget knob under **non-metric** (`metric_mds=False`) MDS. Never
   tested; all of I/J/K is metric.
 
 **Doc guidance should state:** the regime dependence (`strain_top2` as a cheap

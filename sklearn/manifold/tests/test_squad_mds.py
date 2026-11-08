@@ -10,6 +10,7 @@ port to the published algorithm. This plays the same role Experiment L's
 """
 import numpy as np
 import pytest
+from numpy.testing import assert_array_equal
 from sklearn.datasets import make_s_curve
 from sklearn.manifold._squad_mds import (
     _PAIR_LEFT,
@@ -386,3 +387,15 @@ def test_bad_init_raises(small_X):
 def test_bad_lr_decay_raises(small_X):
     with pytest.raises(ValueError, match="lr_decay"):
         squad_mds(small_X, n_iter=5, lr_decay="cosine")
+
+
+def test_callback_sees_every_iteration_and_changes_nothing():
+    X = np.random.RandomState(0).standard_normal((60, 5))
+    expected, _ = squad_mds(X, n_iter=5, random_state=0)
+
+    calls = []
+    embedding, _ = squad_mds(
+        X, n_iter=5, random_state=0, callback=lambda t, emb: calls.append(t)
+    )
+    assert calls == [0, 1, 2, 3, 4, 5]
+    assert_array_equal(embedding, expected)

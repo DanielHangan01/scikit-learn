@@ -15,14 +15,13 @@ sys.path.insert(0, str(parent_dir.parent.parent))
 
 from sklearn.manifold import MDS as SMACOF_MDS
 try:
-    from sklearn.manifold._sgd_mds import (
-        SGDMDS,
+    from sklearn.manifold._sgd_mds import SGDMDS
+    from sklearn.manifold._pivot_mds import (
+        _maybe_pca_project,
         _resolve_n_pivots,
         _select_pivots_maxmin,
-        _maybe_pca_project,
+        pivot_mds as _pivot_mds_fn,
     )
-    from sklearn.manifold._pivot_mds import pivot_mds as _pivot_mds_fn
-    import sklearn.manifold._sgd_mds as _sgd_mds_module
 except ImportError:
     print("Could not import SGDMDS from sklearn.manifold._sgd_mds.")
     print("Make sure you are running this from the benchmarks directory.")
@@ -327,17 +326,18 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
 
     sgd = SGDMDS(
         n_components=2,
-        metric=True,
+        metric_mds=True,
         n_init=1,
         max_iter=max_iter,
         learning_rate_init=lr,
         scheduler="hybrid",
         scheduler_switch_ratio=switch_ratio,
         epsilon=epsilon,
-        dissimilarity=dissimilarity,
+        sampling_strategy="random" if dissimilarity == "lazy" else "cycle",
+        block_size=2,
+        metric="precomputed" if dissimilarity == "precomputed" else "euclidean",
         compute_stress=compute_stress,
         random_state=random_state,
-        n_jobs=1
     )
 
     t0 = time()
@@ -348,7 +348,7 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
         "algo": f"SGD-{dissimilarity}",
         "embedding": embedding,
         "stress": sgd.stress_,
-        "history": sgd.stress_history_,
+        "history": [],
         "time": total_time,
         "n_iter": sgd.n_iter_
     }
@@ -357,124 +357,53 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
 def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
                                 max_iter=30, switch_ratio=0.5, lr=0.5,
                                 epsilon=0.001, compute_stress=True,
-                                block_size=2, block_sampling="random",
-                                block_update="sequential",
-                                force_blocked_kernel=False):
+                                block_size=2):
     """
     Runs SGDMDS with sampling_strategy='random' at a fixed per-epoch budget.
 
-    n_updates_per_epoch: int (or 'auto' for the full-cycle default).
-    Used by Experiment I to characterise the stress / wall-time Pareto curve
-    of budgeted uniform random pair sampling.
+    n_updates_per_epoch: int (or 'auto' for the full-cycle default), counted
+    in pairs. block_size=2 draws pairs independently; larger values are
+    point-blocked sampling (Experiment N).
 
-    compute_stress=False skips all in-fit stress evaluation -- in lazy mode
-    that avoids materializing the full N x N distance matrix just for
-    scoring (the O(N*D) fast-mode memory promise then actually holds). The
-    caller scores externally; "time" is then pure fit time.
-
-    block_size / block_sampling / block_update: point-blocked sampling
-    (Experiment N). The defaults run the original random-pair kernel, and
-    the label is unchanged for them, so every earlier caller is untouched.
-    force_blocked_kernel=True runs the defaults through the blocked kernel
-    instead (same embedding, different implementation; see
-    _sgd_mds.FORCE_BLOCKED_KERNEL).
+    compute_stress=False skips the final O(N^2) stress evaluation; the caller
+    scores externally and "time" is then pure fit time.
     """
     budget_label = (
         "auto" if n_updates_per_epoch == "auto" else f"b{n_updates_per_epoch}"
     )
-    if (block_size, block_sampling, block_update) != (2, "random",
-                                                       "sequential"):
-        budget_label += f"-m{block_size}-{block_sampling}-{block_update}"
-    elif force_blocked_kernel:
-        budget_label += "-blockedkernel"
+    if block_size != 2:
+        budget_label += f"-m{block_size}"
     print(f"  [SGD-random-{budget_label}] Running on N={X.shape[0]}, "
           f"max_iter={max_iter}...")
 
     sgd = SGDMDS(
         n_components=2,
-        metric=True,
+        metric_mds=True,
         n_init=1,
         max_iter=max_iter,
         learning_rate_init=lr,
         scheduler="hybrid",
         scheduler_switch_ratio=switch_ratio,
         epsilon=epsilon,
-        dissimilarity="lazy",
         sampling_strategy="random",
         n_updates_per_epoch=n_updates_per_epoch,
         block_size=block_size,
-        block_sampling=block_sampling,
-        block_update=block_update,
         compute_stress=compute_stress,
         random_state=random_state,
-        n_jobs=1,
-    )
-
-    previous = _sgd_mds_module.FORCE_BLOCKED_KERNEL
-    _sgd_mds_module.FORCE_BLOCKED_KERNEL = bool(force_blocked_kernel)
-    try:
-        t0 = time()
-        embedding = sgd.fit_transform(X)
-        total_time = time() - t0
-    finally:
-        _sgd_mds_module.FORCE_BLOCKED_KERNEL = previous
-
-    return {
-        "algo": f"SGD-random-{budget_label}",
-        "embedding": embedding,
-        "stress": sgd.stress_,
-        "history": sgd.stress_history_,
-        "time": total_time,
-        "n_iter": sgd.n_iter_,
-        "n_updates_per_epoch": n_updates_per_epoch,
-    }
-
-
-def run_pivot_benchmark(X, dissimilarity="lazy", n_pivots="auto", random_state=None,
-                        max_iter=30, switch_ratio=0.5, lr=0.5, epsilon=0.001,
-                        pivot_strategy="maxmin", pivot_pca_dim=30):
-    """
-    Runs SGDMDS with pivot sampling strategy.
-    dissimilarity: 'lazy' or 'euclidean' (precomputed pivot pairs).
-    n_pivots: int or 'auto'.
-    pivot_strategy: 'maxmin' or 'maxmin_pca'.
-    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
-    """
-    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
-    pca_tag = f"-pca{pivot_pca_dim}" if pivot_strategy == "maxmin_pca" else ""
-    print(f"  [SGD-pivot-{dissimilarity}{pca_tag}-{k_label}] Running on N={X.shape[0]}...")
-
-    sgd = SGDMDS(
-        n_components=2,
-        metric=True,
-        n_init=1,
-        max_iter=max_iter,
-        learning_rate_init=lr,
-        scheduler="hybrid",
-        scheduler_switch_ratio=switch_ratio,
-        epsilon=epsilon,
-        dissimilarity=dissimilarity,
-        sampling_strategy="pivot",
-        n_pivots=n_pivots,
-        pivot_strategy=pivot_strategy,
-        pivot_pca_dim=pivot_pca_dim,
-        random_state=random_state,
-        n_jobs=1,
     )
 
     t0 = time()
     embedding = sgd.fit_transform(X)
     total_time = time() - t0
 
-    actual_k = int(sgd.pivot_indices_.shape[0])
     return {
-        "algo": f"SGD-pivot-{dissimilarity}-{k_label}",
+        "algo": f"SGD-random-{budget_label}",
         "embedding": embedding,
         "stress": sgd.stress_,
-        "history": sgd.stress_history_,
+        "history": [],
         "time": total_time,
         "n_iter": sgd.n_iter_,
-        "n_pivots": actual_k,
+        "n_updates_per_epoch": n_updates_per_epoch,
     }
 
 
@@ -514,13 +443,9 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     t_sel0 = time()
     if pivot_strategy == "maxmin_pca":
         features_proj = _maybe_pca_project(X64, pivot_pca_dim, rng)
-        pivot_indices = _select_pivots_maxmin(
-            features_proj, k_resolved, rng, is_lazy=True,
-        )
+        pivot_indices = _select_pivots_maxmin(features_proj, k_resolved, rng)
     else:
-        pivot_indices = _select_pivots_maxmin(
-            X64, k_resolved, rng, is_lazy=True,
-        )
+        pivot_indices = _select_pivots_maxmin(X64, k_resolved, rng)
     selection_time = time() - t_sel0
 
     t0 = time()
@@ -596,7 +521,7 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
                             init="pca", momentum=0.0, lr_decay="geometric",
                             max_step_frac=1.0, random_state=None,
                             scoring_block_size=2048, score=True,
-                            record_loss=False):
+                            record_loss=False, callback=None):
     """
     Runs standalone SQuaD-MDS (Lambert et al., 2022) — no SGD-MDS involved.
 
@@ -647,7 +572,7 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
         exaggerate_d=exaggerate_d, stop_exaggeration=stop_exaggeration,
         metric=metric, init=init, momentum=momentum, lr_decay=lr_decay,
         max_step_frac=max_step_frac, random_state=random_state,
-        record_loss=record_loss,
+        record_loss=record_loss, callback=callback,
     )
     total_time = time() - t0
 
@@ -682,63 +607,6 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
         "time_scoring": time() - t_score0,
     })
     return result
-
-
-def run_hybrid_benchmark(X, n_pivots="auto", hybrid_alpha=0.5,
-                         random_state=None, max_iter=30, switch_ratio=0.5,
-                         lr=0.5, epsilon=0.001, pivot_strategy="maxmin",
-                         pivot_pca_dim=30):
-    """
-    Runs SGDMDS with hybrid (pivot + random) sampling — lazy mode only.
-
-    Per epoch, performs ``hybrid_alpha * k * N`` pivot updates and
-    ``(1 - hybrid_alpha) * k * N`` random updates, keeping the per-epoch
-    update budget equal to pure-pivot sampling.
-
-    n_pivots: int or 'auto'.
-    hybrid_alpha: float in [0, 1] — fraction of pivot updates per epoch.
-    pivot_strategy: 'maxmin' or 'maxmin_pca'.
-    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
-    """
-    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
-    pca_tag = f"-pca{pivot_pca_dim}" if pivot_strategy == "maxmin_pca" else ""
-    print(f"  [SGD-hybrid{pca_tag}-a{hybrid_alpha:.2f}-{k_label}] "
-          f"Running on N={X.shape[0]}...")
-
-    sgd = SGDMDS(
-        n_components=2,
-        metric=True,
-        n_init=1,
-        max_iter=max_iter,
-        learning_rate_init=lr,
-        scheduler="hybrid",
-        scheduler_switch_ratio=switch_ratio,
-        epsilon=epsilon,
-        dissimilarity="lazy",
-        sampling_strategy="hybrid",
-        n_pivots=n_pivots,
-        pivot_strategy=pivot_strategy,
-        pivot_pca_dim=pivot_pca_dim,
-        hybrid_alpha=hybrid_alpha,
-        random_state=random_state,
-        n_jobs=1,
-    )
-
-    t0 = time()
-    embedding = sgd.fit_transform(X)
-    total_time = time() - t0
-
-    actual_k = int(sgd.pivot_indices_.shape[0])
-    return {
-        "algo": f"SGD-hybrid-a{hybrid_alpha:.2f}-{k_label}",
-        "embedding": embedding,
-        "stress": sgd.stress_,
-        "history": sgd.stress_history_,
-        "time": total_time,
-        "n_iter": sgd.n_iter_,
-        "n_pivots": actual_k,
-        "hybrid_alpha": hybrid_alpha,
-    }
 
 
 def per_point_stress(embedding, dissimilarity_matrix):

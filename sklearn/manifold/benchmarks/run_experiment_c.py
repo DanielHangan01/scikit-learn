@@ -73,16 +73,15 @@ def run_dataset_tuning(dataset_name):
                         
                             est = SGDMDS(
                                 n_components=2,
-                                metric=True,
+                                metric_mds=True,
                                 n_init=1,
                                 max_iter=max_iter,
                                 learning_rate_init=lr,
                                 scheduler=scheduler,
                                 scheduler_switch_ratio=ratio,
                                 epsilon=epsilon,
-                                dissimilarity="precomputed", 
+                                metric="precomputed",
                                 random_state=seed,
-                                n_jobs=1
                             )
                             
                             t0 = time()

@@ -378,7 +378,7 @@ def plot_per_point_histogram(dataset: str, k: int = 50, seed: int = 42,
     # Re-derive the same pivot set the benchmark wrappers used (they don't
     # round-trip pivot_indices, but pivot selection is deterministic given
     # X, k, seed, strategy).
-    from sklearn.manifold._sgd_mds import (
+    from sklearn.manifold._pivot_mds import (
         _resolve_n_pivots, _select_pivots_maxmin, _maybe_pca_project,
     )
     from sklearn.utils import check_random_state
@@ -389,7 +389,7 @@ def plot_per_point_histogram(dataset: str, k: int = 50, seed: int = 42,
     else:
         feats = X.astype(np.float64)
     pivot_indices = set(int(i) for i in _select_pivots_maxmin(
-        feats, k_resolved, rng, is_lazy=True))
+        feats, k_resolved, rng))
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
     labels = [

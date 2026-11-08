@@ -15,8 +15,60 @@ References
 import numpy as np
 from scipy import linalg
 
+from sklearn.decomposition import PCA
 from sklearn.metrics import euclidean_distances
 from sklearn.utils.extmath import svd_flip
+
+
+def _resolve_n_pivots(n_pivots, n_components, n_samples):
+    """Resolve ``"auto"`` and validate against ``(n_components, n_samples)``."""
+    if n_pivots == "auto":
+        k = min(50, max(n_components + 1, n_samples // 20))
+    else:
+        k = int(n_pivots)
+    if k <= n_components:
+        raise ValueError(
+            f"n_pivots ({k}) must be greater than n_components ({n_components})."
+        )
+    if k > n_samples:
+        raise ValueError(f"n_pivots ({k}) must be <= n_samples ({n_samples}).")
+    return k
+
+
+def _maybe_pca_project(features, pca_dim, rng):
+    """Project ``features`` to ``pca_dim`` PCA components for pivot selection.
+
+    Returns contiguous float64 features, unchanged if PCA cannot reduce them.
+    """
+    n_samples, n_feat = features.shape
+    target = min(int(pca_dim), n_feat, n_samples)
+    if target >= n_feat:
+        return np.ascontiguousarray(features, dtype=np.float64)
+
+    pca_seed = int(rng.randint(np.iinfo(np.int32).max))
+    pca = PCA(n_components=target, random_state=pca_seed)
+    projected = pca.fit_transform(features)
+    return np.ascontiguousarray(projected, dtype=np.float64)
+
+
+def _select_pivots_maxmin(data, n_pivots, rng):
+    """Greedy MaxMin (farthest-point) pivot selection on a feature matrix.
+
+    Each next pivot maximizes the minimum distance to the pivots selected so
+    far, a 2-approximation of k-center.
+    """
+    n_samples = data.shape[0]
+    pivots = np.empty(n_pivots, dtype=np.int32)
+    pivots[0] = rng.randint(n_samples)
+    min_dist = np.full(n_samples, np.inf, dtype=np.float64)
+
+    for k in range(n_pivots):
+        diff = data - data[int(pivots[k])]
+        new_dists = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+        np.minimum(min_dist, new_dists, out=min_dist)
+        if k + 1 < n_pivots:
+            pivots[k + 1] = int(np.argmax(min_dist))
+    return pivots
 
 
 def pivot_mds(X, pivot_indices, n_components=2, *, metric="euclidean"):

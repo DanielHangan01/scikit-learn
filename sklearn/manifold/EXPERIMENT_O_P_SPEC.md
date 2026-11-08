@@ -1,7 +1,7 @@
 # Experiments O, P and Q — the paper's reporting runs
 
-**Status:** design decisions settled (§13); cluster details pending. Nothing here
-is implemented or run. Runners don't exist yet; `run_experiment_o.py`,
+**Status:** design decisions settled (§13); cluster details pending. The algorithm
+freeze (§10) is implemented; the harness isn't, and nothing has run. Runners don't exist yet; `run_experiment_o.py`,
 `run_experiment_p.py` and `run_experiment_q.py` are the proposed names.
 
 **Prerequisite reading:** [CLAUDE.md](../../CLAUDE.md) §2 (paper storyline),
@@ -41,9 +41,9 @@ experiments are reused (§8).
 
 | Name | Configuration |
 |---|---|
-| **Full SGDMDS** | Golden config: `dissimilarity='euclidean'`, 30 epochs, `lr=0.5`, hybrid scheduler, switch 0.5, `epsilon=0.001`, `n_init=1` |
-| **Budgeted** | Same, `dissimilarity='lazy'`, `sampling_strategy='random'`, `n_updates_per_epoch=k·N` |
-| **Point-blocked** | Budgeted plus `block_size=m`, `block_sampling='random'`, `block_update='sequential'`. Budget counted in pairs. m=16 |
+| **Full SGDMDS** | `SGDMDS()`: the defaults are the golden config (`sampling_strategy='cycle'`, 30 epochs, `lr=0.5`, hybrid scheduler, switch 0.5, `epsilon=0.001`, `n_init=1`) |
+| **Budgeted** | Same, `sampling_strategy='random'`, `n_updates_per_epoch=k·N`, `block_size=2` |
+| **Point-blocked** | Same, `block_size=16`. Budget counted in pairs |
 | **Adapted SQuaD-MDS** | Experiment M's grid (§3), which includes the authors' default |
 | **SMACOF** | See §2.1 |
 
@@ -155,8 +155,8 @@ Rungs above 50k are out of scope: there's no full-sweep baseline there.
 Replaces Experiment B with the same data: `s_curve` (D=100), `swiss_roll` (D=300)
 and `torus` (D=500) at N ∈ {500, 1000, …, 5000}, 10 repeats.
 
-Arms: the SMACOF default arm, full SGDMDS, full SGDMDS in lazy mode, budgeted and
-blocked at k=200. Same measurement protocol as O. About 1,500 fits.
+Arms: the SMACOF default arm, full SGDMDS, `sampling_strategy='random'` with the
+full pair budget and `block_size=2` (B's lazy arm), budgeted and blocked at k=200. Same measurement protocol as O. About 1,500 fits.
 
 ---
 
@@ -183,8 +183,8 @@ its arrays alone are tens of GB. Under 1 h.
 | Algorithm | Needs stress? | Consequence |
 |---|---|---|
 | SMACOF | Yes: stopping rule ([_mds.py:193-195](_mds.py#L193-L195)) | Stays in the timing. It reuses distances already computed for the iteration |
-| SGDMDS (all forms) | No | `compute_stress=False`; snapshots instead |
-| SQuaD-MDS | No | Snapshots instead |
+| SGDMDS (all forms) | No | `compute_stress=False`; snapshots through `_epoch_hook` |
+| SQuaD-MDS | No | Snapshots through `squad_mds(callback=)` |
 
 ### 7.2 Stress history
 
@@ -304,32 +304,39 @@ Provisional: figures get chosen once the data is in.
 
 Nothing below is started. It all stays in `sklearn/manifold/`.
 
-**Algorithm freeze (before the harness):**
+**Algorithm freeze: done, not yet tagged.**
 
-1. `noexcept` on `_lazy_sgd_step`, `xorshift32` and `_interp_isotonic`. Verify that
-   no `__Pyx_ErrOccurredWithGIL` follows the lazy calls in the generated C, and that
-   the microbenchmark shows the original kernel ≈ blocked m=2.
-2. Move research-only code out of the estimator: pivot, hybrid, partition, sum and
-   mean updates, `FORCE_BLOCKED_KERNEL`.
-3. Final public parameter names and defaults.
-4. Private snapshot hooks in `SGDMDS` (not constructor parameters) and in
-   `squad_mds`.
-5. Golden fixtures stay bit-identical. Sync with upstream again if it has moved
-   meaningfully, then tag the commit.
+1. `noexcept` on `_pair_update` (was `_lazy_sgd_step`), `xorshift32` and
+   `_interp_isotonic`. No `__Pyx_ErrOccurredWithGIL` remains in the generated C.
+2. Research code removed from the estimator: pivot, hybrid, partition, sum and mean
+   updates, `FORCE_BLOCKED_KERNEL`. Pivot selection moved to `_pivot_mds.py`.
+3. **The random kernel stays,** contrary to the original plan. After the fix it is
+   bit-identical to the blocked kernel at m=2 but up to 35% faster at low D, so
+   removing it would have slowed the budgeted arm and flattered blocking.
+4. Parameter names follow `MDS`: `metric_mds`, `metric`, `metric_params`.
+   `sampling_strategy` replaces `dissimilarity='lazy'`, since `'cycle'` always
+   stores the matrix and `'random'` never does. The proposed `precompute_distances`
+   was unnecessary. Unused `tol`, `batch_size` and `n_jobs` are gone.
+5. Defaults are the golden configuration, and `block_size` defaults to 16.
+6. `stress_history_` and all in-fit scoring are gone. Private hooks replace them:
+   `SGDMDS._epoch_hook` and `squad_mds(callback=)`.
+7. Verified: 12 golden embeddings, 26 scaled datasets and 7 exact fits are
+   bit-identical to the code before the freeze, and `check_estimator` passes on both
+   strategies.
 
 **Harness:**
 
-6. Update `run_smacof_benchmark`: it passes the deprecated `dissimilarity` and a
+1. Update `run_smacof_benchmark`: it passes the deprecated `dissimilarity` and a
    boolean `metric` (support is due to be dropped in 1.10), and hard-codes
    `eps=1e-12` and `n_init=1`.
-7. Thread limits around every fit in `bench_utils.py`.
-8. Scorer: exact with cached input distances, fixed-pair estimate, and the exact
+2. Thread limits around every fit in `bench_utils.py`.
+3. Scorer: exact with cached input distances, fixed-pair estimate, and the exact
    final score.
-9. `run_experiment_o.py`, `run_experiment_p.py` and `run_experiment_q.py` on a
+4. `run_experiment_o.py`, `run_experiment_p.py` and `run_experiment_q.py` on a
    shared harness: per-fit
    resume, fingerprint, and a results root from `SGDMDS_RESULTS_ROOT`, so
    `results/` is never touched.
-10. Microbenchmark arms (§6), plotters for the new tree, and a comparison script
+5. Microbenchmark arms (§6), plotters for the new tree, and a comparison script
     for §11.
 
 **Not for the PR:** this fork's `stress_history_` patch to `_mds.py` changes
@@ -353,7 +360,7 @@ After it:
 - P's full arm vs K-optimized (seed 42). This is the first cross-machine check
   through BLAS.
 - The original kernel's stress in O vs a few J-convention fits run for this purpose.
-- Original kernel ≈ blocked m=2 in time.
+- The microbenchmark reproduces the laptop's ordering: random fastest at low D, blocked fastest at high D.
 - Estimator error across all P fits.
 
 ---
@@ -362,7 +369,7 @@ After it:
 
 | Step | What | Where | Est. core-h | Peak RAM |
 |---|---|---|--:|---|
-| 1 | Freeze and harness (§10) | Laptop | — | — |
+| 1 | Harness (§10) | Laptop | — | — |
 | 2 | Setup: rsync, build, checksums, smoke test | Cluster | — | — |
 | 3 | Microbenchmark and contention calibration | Cluster | ~1 | 3 GB+ (§6) |
 | 4 | O | Cluster | 20–30 | ~5 GB |

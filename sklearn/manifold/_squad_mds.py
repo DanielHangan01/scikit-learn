@@ -295,6 +295,7 @@ def squad_mds(
     backend="cython",
     random_state=None,
     record_loss=False,
+    callback=None,
 ):
     """Embed ``X`` with SQuaD-MDS (Lambert et al., 2022).
 
@@ -363,6 +364,10 @@ def squad_mds(
         Accumulate the mean per-quartet cost at each iteration into the
         returned ``info['loss_history']``. Costs nothing beyond one
         reduction over an array already in cache.
+
+    callback : callable, default=None
+        Called as ``callback(n_iterations_done, embedding)`` before the first
+        iteration and after each one. The embedding is live: copy it to keep it.
 
     Returns
     -------
@@ -452,6 +457,9 @@ def squad_mds(
         X = np.ascontiguousarray(X, dtype=np.float64)
         emb = np.ascontiguousarray(emb, dtype=np.float64)
 
+    if callback is not None:
+        callback(0, emb)
+
     for t in range(n_iter):
         step = lr_schedule[t]
         squared = exaggerate_d and t < stop_exa
@@ -475,6 +483,8 @@ def squad_mds(
             n_clipped += clipped
             if record_loss:
                 loss_history.append(loss / n_quartets)
+            if callback is not None:
+                callback(t + 1, emb)
             continue
 
         _quartet_hd_distances(X, quartets, squared, block, d_hd)
@@ -502,6 +512,9 @@ def squad_mds(
             # accumulate. Points beyond n_used simply get no update this
             # iteration -- the reference behaves the same way.
             emb[flat] -= trust_region(step * grad.reshape(-1, n_components))
+
+        if callback is not None:
+            callback(t + 1, emb)
 
     return emb, {
         "n_iter": int(n_iter),
