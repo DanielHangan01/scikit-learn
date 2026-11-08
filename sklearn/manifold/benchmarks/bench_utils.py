@@ -27,6 +27,8 @@ except ImportError:
     print("Make sure you are running this from the benchmarks directory.")
     sys.exit(1)
 
+from threadpoolctl import threadpool_limits
+
 from sklearn.datasets import make_s_curve, make_swiss_roll
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample, check_random_state
@@ -275,28 +277,34 @@ def lift_to_high_dim(X, target_dim, noise_scale=0.1, random_state=42):
     extra = rng.normal(loc=0.0, scale=noise_scale, size=(n, target_dim - d0))
     return np.hstack([X, extra])
 
-def run_smacof_benchmark(X, dissimilarity="euclidean", random_state=None, max_iter=300):
+def run_smacof_benchmark(X, dissimilarity="euclidean", random_state=None, max_iter=300,
+                         eps=1e-12, init="random"):
     """
     Runs SMACOF. Supports 'precomputed' or 'euclidean'.
     If precomputed, X must be the distance matrix.
+
+    eps defaults to 1e-12, which forces all max_iter iterations: that is what
+    Experiments A and B ran. sklearn's own default is 1e-6.
     """
     print(f"  [SMACOF] Running on N={X.shape[0]} (Mode: {dissimilarity})...")
-    
+
     mds = SMACOF_MDS(
         n_components=2,
-        metric=True,
+        metric_mds=True,
         n_init=1,
+        init=init,
         max_iter=max_iter,
-        eps=1e-12,
+        eps=eps,
         random_state=random_state,
-        dissimilarity=dissimilarity, # Passes 'precomputed' or 'euclidean'
+        metric=dissimilarity,
         n_jobs=1,
-        normalized_stress=False 
+        normalized_stress=False
     )
-    
-    t0 = time()
-    embedding = mds.fit_transform(X)
-    total_time = time() - t0
+
+    with threadpool_limits(1):
+        t0 = time()
+        embedding = mds.fit_transform(X)
+        total_time = time() - t0
     
     if hasattr(mds, "stress_history_") and mds.stress_history_ is not None:
         history = mds.stress_history_
@@ -340,9 +348,10 @@ def run_sgd_benchmark(X, dissimilarity="precomputed", random_state=None, max_ite
         random_state=random_state,
     )
 
-    t0 = time()
-    embedding = sgd.fit_transform(X)
-    total_time = time() - t0
+    with threadpool_limits(1):
+        t0 = time()
+        embedding = sgd.fit_transform(X)
+        total_time = time() - t0
 
     return {
         "algo": f"SGD-{dissimilarity}",
@@ -392,9 +401,10 @@ def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
         random_state=random_state,
     )
 
-    t0 = time()
-    embedding = sgd.fit_transform(X)
-    total_time = time() - t0
+    with threadpool_limits(1):
+        t0 = time()
+        embedding = sgd.fit_transform(X)
+        total_time = time() - t0
 
     return {
         "algo": f"SGD-random-{budget_label}",
@@ -440,6 +450,7 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     # started the timer after selection and so under-reported total time by
     # ~40x. `time` is now the full cost of producing an embedding;
     # `time_pivot_selection` / `time_spectral` give the split.
+    single_thread = threadpool_limits(1)
     t_sel0 = time()
     if pivot_strategy == "maxmin_pca":
         features_proj = _maybe_pca_project(X64, pivot_pca_dim, rng)
@@ -454,6 +465,7 @@ def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
     )
     spectral_time = time() - t0
     total_time = selection_time + spectral_time
+    single_thread.restore_original_limits()
 
     # Full N(N-1)/2 stress, for direct comparison with SGD results.
     #
@@ -566,6 +578,7 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
     # PCA initialisation is part of the algorithm as the authors publish it
     # (their main.py does it before the timer, but it is not free at large
     # N*D), so it is inside the timed region. `time_init` gives the split.
+    single_thread = threadpool_limits(1)
     t0 = time()
     embedding, info = squad_mds(
         X64, n_components=2, n_iter=n_iter, lr=lr,
@@ -575,6 +588,7 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
         record_loss=record_loss, callback=callback,
     )
     total_time = time() - t0
+    single_thread.restore_original_limits()
 
     result = {
         "algo": label,

@@ -1,7 +1,8 @@
 # Experiments O, P and Q — the paper's reporting runs
 
 **Status:** design decisions settled (§13); cluster details pending. The algorithm
-freeze (§10) is implemented; the harness isn't, and nothing has run. Runners don't exist yet; `run_experiment_o.py`,
+freeze and the harness (§10) are implemented and smoke-tested; nothing has run at
+full size. Runners don't exist yet; `run_experiment_o.py`,
 `run_experiment_p.py` and `run_experiment_q.py` are the proposed names.
 
 **Prerequisite reading:** [CLAUDE.md](../../CLAUDE.md) §2 (paper storyline),
@@ -224,6 +225,12 @@ only 2-D distances, ~0.2 s at worst.
 
 All **table values are exact**. The estimate only draws curves.
 
+Measured on three sources at N=10k (the spread follows exactly from the variance of
+the squared residuals over all pairs): at M = 10⁷ the estimate's standard error is
+0.05–0.13% for a trained embedding, and at most 0.47% for the random initial one
+(california_housing, which is heavy-tailed). Building the sample takes 1 s at D=8
+and 137 s at D=3,072, once per (dataset, N); each snapshot then takes 0.27 s.
+
 ### 7.3 Stress metric
 
 Each fit reports exact raw stress, the stress-optimal scale α, and stress at that
@@ -324,20 +331,27 @@ Nothing below is started. It all stays in `sklearn/manifold/`.
    bit-identical to the code before the freeze, and `check_estimator` passes on both
    strategies.
 
-**Harness:**
+**Harness: done, in `benchmarks/`.**
 
-1. Update `run_smacof_benchmark`: it passes the deprecated `dissimilarity` and a
-   boolean `metric` (support is due to be dropped in 1.10), and hard-codes
-   `eps=1e-12` and `n_init=1`.
-2. Thread limits around every fit in `bench_utils.py`.
-3. Scorer: exact with cached input distances, fixed-pair estimate, and the exact
-   final score.
-4. `run_experiment_o.py`, `run_experiment_p.py` and `run_experiment_q.py` on a
-   shared harness: per-fit
-   resume, fingerprint, and a results root from `SGDMDS_RESULTS_ROOT`, so
-   `results/` is never touched.
-5. Microbenchmark arms (§6), plotters for the new tree, and a comparison script
-    for §11.
+- `paper_harness.py`: timed fits for SGDMDS, SMACOF and SQuaD-MDS under
+  `threadpool_limits(1)`; the snapshot `Recorder`, which removes its own time;
+  `ExactScorer` (input distances cached once per X) and `PairSampleScorer`; batched
+  exact final scores; `ResultStore` (per-fit resume, `results.csv`,
+  `histories.jsonl`, seed-42 embeddings); and the machine fingerprint in
+  `meta.json`.
+- `run_experiment_o.py`, `run_experiment_p.py`, `run_experiment_q.py`: one process
+  per dataset. `--quick` and `--seeds` shrink the grid for smoke tests; P also takes
+  `--ladder` and `--score-pairs`.
+- `compare_results.py`: the reproduction checks of §11.
+- `bench_blocked_kernel.py`: gains the `squad` and `cycle` arms of §6.
+- `bench_utils.py`: thread limits inside every wrapper's timed region, and
+  `run_smacof_benchmark` without deprecated arguments. Its `eps` stays 1e-12 by
+  default, so A and B still mean what they meant.
+- **Plotters for the new tree are not written:** figures are chosen after the data.
+
+Results go to `SGDMDS_RESULTS_ROOT`, default `benchmarks/results_paper` (ignored by
+git), and the reference for comparisons to `SGDMDS_REFERENCE_ROOT`, default
+`benchmarks/results`.
 
 **Not for the PR:** this fork's `stress_history_` patch to `_mds.py` changes
 `smacof`'s return values. Keep it in the research branch.
@@ -346,13 +360,16 @@ Nothing below is started. It all stays in `sklearn/manifold/`.
 
 ## 11. Integrity checks
 
-Before the campaign:
+Before the campaign (all checked on the laptop):
 
 - Full manifold tests pass, including bit-identity.
-- Thread limits hold, confirmed with `threadpool_info()` inside a fit.
-- A run with snapshots matches one without to <1% in time, and gives the same
-  embedding.
-- Estimator error on one low-D and one heavy-tailed source is under 0.5%.
+- Thread limits hold: BLAS reports one thread inside a fit, recorded in `meta.json`.
+- Snapshots don't change the embedding (`test_epoch_hook`), and the hook costs
+  about 0.1 ms per fit.
+- The exact scorer matches `stress_exact_chunked` to 1e-15, and the pair estimate's
+  error is as stated in §7.2.
+- Smoke runs of O, P and Q resume per fit, and O's SQuaD-MDS reproduces
+  Experiment M to 9e-15.
 
 After it:
 
@@ -372,29 +389,43 @@ After it:
 | 1 | Harness (§10) | Laptop | — | — |
 | 2 | Setup: rsync, build, checksums, smoke test | Cluster | — | — |
 | 3 | Microbenchmark and contention calibration | Cluster | ~1 | 3 GB+ (§6) |
-| 4 | O | Cluster | 20–30 | ~5 GB |
+| 4 | O | Cluster | 25–40 | ~5 GB |
 | 5 | P | Cluster | ~60 | **~100 GB** at 50k full; ~16 GB otherwise |
 | 6 | Q | Cluster | 10–15 | ~2 GB |
 | 7 | Checks, plots, results docs | Laptop | — | — |
 
 Estimates scale recorded fit and scoring times on the old machines; treat them as
 rough, and allow up to double on slower server cores. O's largest part is
-SQuaD-MDS's grid (~10 h, plus snapshot scoring), then SMACOF (0.12 h per seed for
+SQuaD-MDS's grid (~10 h, plus up to ~7 h of exact snapshot scoring at 0.07 s per
+snapshot at N=5,750), then SMACOF (0.12 h per seed for
 all datasets at 300 iterations, measured in A with unpinned BLAS, so one thread will
 be slower by an unknown factor). P's largest parts are the full-sweep baseline
-(~15 h), budgeted (~15 h) and SQuaD-MDS (~7 h plus scoring).
+(~15 h), budgeted (~15 h) and SQuaD-MDS (~7 h), plus ~5 h of estimated
+snapshot scoring and the batched exact final scores.
 
 Wall-clock is about 1–2 days if jobs run in parallel per dataset. The longest single
 job is likely cifar10_raw in P.
 
-Proposed commands, from `benchmarks/`, one process per dataset:
+Commands, from `benchmarks/`, one process per dataset:
 
 ```bash
-export SGDMDS_RESULTS_ROOT=$PWD/results_paper
+export SGDMDS_RESULTS_ROOT=$PWD/results_paper   # the default
+export SGDMDS_MAX_MEM_GB=<node RAM>              # P only: skip full sweeps that won't fit
 python bench_blocked_kernel.py
-python run_experiment_o.py <dataset>
+python run_experiment_o.py <dataset>             # --list shows the datasets
 python run_experiment_p.py <dataset>
 python run_experiment_q.py <dataset>
+python compare_results.py                        # after O and P
+```
+
+Smoke test on a new machine (minutes, into a scratch root):
+
+```bash
+SGDMDS_RESULTS_ROOT=/tmp/smoke python run_experiment_o.py seismic --seeds 1 --quick
+SGDMDS_RESULTS_ROOT=/tmp/smoke python run_experiment_q.py torus --n 500 --seeds 1
+SGDMDS_RESULTS_ROOT=/tmp/smoke python run_experiment_p.py california_housing \
+    --ladder 2000 --seeds 1 --quick --score-pairs 1000000
+SGDMDS_RESULTS_ROOT=/tmp/smoke python bench_blocked_kernel.py --quick
 ```
 
 Job scripts wait for the cluster details (§13).
