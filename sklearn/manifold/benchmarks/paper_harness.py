@@ -376,6 +376,32 @@ def blas_threads_inside_fit() -> List[int]:
         return [d["num_threads"] for d in threadpool_info()]
 
 
+def canary_ns_per_pair(n_samples: int = 20_000, reps: int = 3) -> Dict[str, float]:
+    """Time a fixed kernel workload, to detect slowdowns from other jobs.
+
+    Measured at the start and end of every run (see write_meta). On one machine
+    model the values should agree across jobs; a job whose canary is slow ran on
+    a contended node. D=8 is compute-bound, D=784 memory-bandwidth-bound.
+    """
+    from sklearn.manifold._sgd_mds_cython import run_sgd_epoch_random
+
+    out = {}
+    rng = np.random.RandomState(0)
+    for D in (8, 784):
+        X = np.ascontiguousarray(rng.standard_normal((n_samples, D)))
+        E0 = np.ascontiguousarray(rng.standard_normal((n_samples, 2)))
+        n_updates = 20 * n_samples
+        best = np.inf
+        with threadpool_limits(1):
+            for _ in range(reps):
+                E = E0.copy()
+                t0 = perf_counter()
+                run_sgd_epoch_random(E, X, n_updates, 0.1, 0, 12345)
+                best = min(best, perf_counter() - t0)
+        out[f"D{D}"] = 1e9 * best / n_updates
+    return out
+
+
 def machine_fingerprint() -> Dict[str, Any]:
     import Cython
     import scipy
@@ -401,6 +427,7 @@ def machine_fingerprint() -> Dict[str, Any]:
                       lib=Path(d.get("filepath", "")).name)
                  for d in threadpool_info()],
         "blas_threads_inside_fit": blas_threads_inside_fit(),
+        "canary_ns_per_pair": canary_ns_per_pair(),
     }
 
 

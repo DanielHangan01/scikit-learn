@@ -454,6 +454,10 @@ Job scripts wait for the cluster details (§13).
 
 ## 13. Decisions
 
+**Open:** choose SQuaD-MDS's setting per dataset on O's seeds 42–46 and report it on
+47–51 (see §14, point 1). No code change needed.
+
+
 Settled 2026-11-05:
 
 1. **SMACOF arms:** the default and `classical_mds`, both at `max_iter=300`.
@@ -464,12 +468,64 @@ Settled 2026-11-05:
 6. **Seeds:** 10 for O; 5 for P, with full SGDMDS at 1 (3 at N=10k).
 7. **Figures:** gather the data first. B's runtime-vs-N data stays, as Q.
 
-Cluster details needed:
+### The COMA cluster (docs.coma-cluster.de, read 2026-11-11)
 
-1. Scheduler and partition names?
-2. CPU models per partition, and can jobs be constrained to one?
-3. Cores and RAM per node, largest-memory node, NUMA layout?
-4. Can jobs take whole nodes? Any limit on array or job counts?
-5. Wall-time limit, and can jobs be preempted or requeued?
-6. Conda or modules? Which gcc? Is there a shared filesystem for the build directory?
-7. Where should the 29 GB of datasets go, and is there a core-hour budget?
+- **Slurm, partition `compute`:** one H100 node (2× Intel Xeon Gold 6548N, 64
+  cores, 2 TB) and three H200 nodes `gpu-nvidia-h200-[1-3]` (2× AMD EPYC 9555
+  Turin, 128 cores, 2.3 TB each). **All runs use the H200 nodes only**
+  (`--exclude=gpu-nvidia-h100`), so every timing comes from one CPU model. Other
+  nodes sit in `develop`, which needs a ticket.
+- **CPU limits are not enforced,** and the nodes are shared with GPU jobs. Every
+  run therefore records a canary timing at start and end (`meta.json`,
+  `canary_ns_per_pair`); a job with a slow canary ran on a contended node.
+- `--exclusive` is allowed for benchmarks: used for the microbenchmark and the
+  contention calibration only (`cluster/calibrate.sbatch`).
+- **Storage:** home (`/storage/home/<user>`, snapshotted daily and backed up
+  off-site to LRZ) holds the code, the environment and `results_paper`;
+  `~/nobackup` (snapshotted, no off-site backup) holds the datasets and the
+  reference results. Both are NFS on every node.
+- **Software:** Spack modules; Python environments via Miniforge (not Anaconda's
+  installer) or venv. Our `environment.yml` uses conda-forge only.
+- **Login node:** no heavy work, and processes die at logout; build inside an
+  allocation (`cluster/setup.sh`).
+- **Access:** eduVPN (MWN split tunnel), then `ssh login.coma-cluster.de`.
+- **Paper acknowledgement:** "Experiments presented in this work were carried out
+  using the CIT-TUM-HN cluster at TUM Campus Heilbronn."
+
+Scripts in `benchmarks/cluster/`: `setup.sh` (one-time), `env.sh`, and the jobs
+`smoke`, `calibrate`, `o`, `p` and `q` (`.sbatch`). Submit from that folder after
+`mkdir -p logs`, in this order: smoke, calibrate, then O, P and Q with the array
+throttles (`%8`) set from the calibration.
+
+**Not in the docs, to ask support** ("Other issue or request"): the maximum job
+time (the scripts assume up to 3 days; per-fit resume makes resubmitting safe),
+quotas on home and nobackup, whether a few days of CPU-only jobs on the GPU nodes
+are welcome (~120–160 core-hours, under 16 cores at a time), and two hours of one
+exclusive H200 node for the calibration.
+
+---
+
+## 14. Known asymmetries
+
+The comparison is fair where it matters: every method sees the same input, runs
+on one thread, pays its own setup (distance matrix, PCA or classical init) inside
+its time, is scored the same way, and avoids stress it doesn't need inside the
+timed region. Budgeted and blocked runs use the same pair budget. These
+asymmetries remain, and the paper should state them:
+
+1. **SQuaD-MDS gets far more tuning:** 252 settings in O, best per dataset picked
+   afterwards, against one fixed SGDMDS configuration. Picking the best of 252 on
+   the same seeds also flatters it slightly. Proposed fix: select on seeds 42–46,
+   report on 47–51 (O only; P has 5 seeds and 12 settings).
+2. **Initialisation differs:** SQuaD-MDS starts from PCA, SMACOF's classical arm
+   from classical MDS, SGDMDS at random (PCA init is deferred, §3). This favours the
+   other methods.
+3. **SMACOF stops at 300 iterations,** at its default budget, and hits the cap on
+   13 of 17 datasets. Part of SGD's stress advantage is SMACOF being unconverged.
+4. **P's full-sweep baseline has one seed above N=10k,** so P's overhead ratios rest
+   on a single run per (dataset, N); the three seeds at N=10k show the noise.
+5. **SMACOF's curves are raw stress only** (from its own record). Fine against
+   SGDMDS, where α≈1; compare SQuaD-MDS curves at the best scale.
+
+Unknown until the cluster calibration: how much jobs sharing a node slow each other.
+

@@ -1,5 +1,53 @@
 # Project status and open work
 
+## 0. Current state (2026-11-08) — read this first
+
+Everything below §0 is the queue as of 2026-09-27 and is **superseded**: the plan
+is now Experiments O, P and Q, in [EXPERIMENT_O_P_SPEC.md](EXPERIMENT_O_P_SPEC.md).
+Sections 1–6 are kept as history; their queued runs (K-optimized at 70k/100k,
+extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
+
+**Done**
+
+- `research/sgd-mds` rebased on upstream `main` (1.10.dev0); old history kept under
+  the tag `pre-upstream-sync`.
+- Algorithm freeze (tag `algorithm-freeze`): `SGDMDS` aligned with `MDS`, GIL bug
+  fixed, research options removed, snapshot hooks added. Spec §10.
+- Harness and runners for O, P and Q, smoke-tested. Spec §10–§12.
+
+**Pending**
+
+- [ ] **Force-push the rewritten history.** On 2026-11-08 the 10 commits with a
+  `Co-Authored-By: Claude` trailer were rewritten locally without it (files
+  identical; branch now `dffb10530`, tags moved). The force-push was blocked by
+  Claude Code's permissions, so the fork still has the old commits (`c6a27c0c3`).
+  Daniel runs:
+  ```bash
+  git push --force-with-lease=research/sgd-mds:c6a27c0c3 origin research/sgd-mds
+  git push --force origin refs/tags/algorithm-freeze refs/tags/pre-upstream-sync
+  git branch -D tmp-pre-upstream-sync          # after both pushes succeed
+  git update-ref -d refs/original/refs/heads/tmp-pre-upstream-sync
+  git -C "../../SGD for MDS" commit --amend --only -m "Snapshot of the paper sources"
+  ```
+  (The last command is relative to this directory; from the repo root it is
+  `git -C "SGD for MDS" ...`.)
+- [x] Cluster details and job scripts: COMA, spec §13 and `benchmarks/cluster/`.
+- [ ] Ask COMA support the open questions in spec §13 (job time limit, quotas,
+  CPU-only use, one exclusive node for calibration).
+- [ ] Before the campaign: tag the commit to run, rsync data, `setup.sh`, smoke,
+  calibrate.
+- [ ] Paper: add COMA's acknowledgement sentence (spec §13).
+- [ ] Open decision: SQuaD-MDS seed split (spec §13, §14).
+- [ ] Still open from the old queue: the paper's wording on SQuaD-MDS (§2 below).
+- [ ] Plotters for the new results tree, after the data is in.
+- [ ] Off-machine copy of the paper, raw results and datasets (only a same-disk
+  backup exists: `~/research-backups/sgd-mds/backup.sh`). COMA's home directory is
+  backed up off-site, so copying the paper and `results/` there would cover it.
+- [ ] Later: PCA init for SGDMDS (spec §3); reset `main` to upstream (ask first);
+  the PR (RESEARCH_NOTES.md §6).
+
+---
+
 **As of 2026-09-27.** Working tree clean; last commit `7c4301d Increased grid
 of experiment M`. Supervisor meeting on Experiment M is done.
 
