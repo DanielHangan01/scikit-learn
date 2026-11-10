@@ -494,15 +494,17 @@ Settled 2026-11-05:
   using the CIT-TUM-HN cluster at TUM Campus Heilbronn."
 
 Scripts in `benchmarks/cluster/`: `setup.sh` (one-time), `env.sh`, and the jobs
-`smoke`, `calibrate`, `o`, `p` and `q` (`.sbatch`). Submit from that folder after
-`mkdir -p logs`, in this order: smoke, calibrate, then O, P and Q with the array
-throttles (`%8`) set from the calibration.
+`smoke`, `calibrate`, `o`, `p` and `q` (`.sbatch`). Submit from that folder, in this
+order: smoke, calibrate, then O, P and Q with the array throttles (`%8`) set from
+the calibration, e.g. `./submit.sh p.sbatch 4`.
 
-**Not in the docs, to ask support** ("Other issue or request"): the maximum job
-time (the scripts assume up to 3 days; per-fit resume makes resubmitting safe),
-quotas on home and nobackup, whether a few days of CPU-only jobs on the GPU nodes
-are welcome (~120–160 core-hours, under 16 cores at a time), and two hours of one
-exclusive H200 node for the calibration.
+**Job length:** every job is capped at 10 hours (Daniel's practice on COMA).
+Runners resume per fit and P scores at least every 15 minutes of fitting, so a job
+that hits the limit loses at most ~15 minutes plus the fit in flight; the longest
+single fit (the full sweep at N=50k) takes about 70 minutes. `cluster/submit.sh`
+queues several 10-hour runs one after another. Memory is no constraint (nodes have
+2.3 TB). The calibration takes ~20–40 minutes of one exclusive node; it is
+requested for one hour.
 
 ---
 

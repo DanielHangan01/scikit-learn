@@ -19,8 +19,6 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 
 - [x] Rewritten history (no Claude trailers) force-pushed with both tags, 2026-11-11.
 - [x] Cluster details and job scripts: COMA, spec §13 and `benchmarks/cluster/`.
-- [ ] Ask COMA support the open questions in spec §13 (job time limit, quotas,
-  CPU-only use, one exclusive node for calibration).
 - [ ] Before the campaign: tag the commit to run, rsync data, `setup.sh`, smoke,
   calibrate.
 - [ ] Paper: add COMA's acknowledgement sentence (spec §13).

@@ -7,7 +7,7 @@
 #SBATCH -c 2
 #SBATCH --hint=nomultithread
 #SBATCH --mem=8G
-#SBATCH -t 1-00:00:00
+#SBATCH -t 10:00:00
 #SBATCH -o logs/%x-%A_%a.out
 set -euo pipefail
 source "$SLURM_SUBMIT_DIR/env.sh"

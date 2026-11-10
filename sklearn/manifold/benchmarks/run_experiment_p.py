@@ -50,6 +50,9 @@ SMACOF_INITS = ["random", "classical_mds"]
 SMACOF_SEEDS = [42, 43, 44]
 N_SCORE_PAIRS = 10**7
 SCORE_CHUNK = 16
+# Fits are only written once their exact final score is in, so a job that hits
+# its time limit loses the unscored ones. Score at least this often.
+SCORE_EVERY_S = 900
 MAX_MEM_GB = (float(os.environ["SGDMDS_MAX_MEM_GB"])
               if "SGDMDS_MAX_MEM_GB" in os.environ else None)
 
@@ -125,7 +128,8 @@ def run_rung(name, X, N, D, rung_seeds, ks, smacof_inits, squad_grid, store,
                 base, algo=algo, config=cid, seed=seed, time_scoring=None,
                 **fields)))
             print(f"    {cid:<36} seed={seed}  {fit['time_fit']:9.2f}s")
-            if len(pending) >= SCORE_CHUNK:
+            if (len(pending) >= SCORE_CHUNK
+                    or sum(p["fit"]["time_fit"] for p in pending) >= SCORE_EVERY_S):
                 flush()
     flush()
     return complete

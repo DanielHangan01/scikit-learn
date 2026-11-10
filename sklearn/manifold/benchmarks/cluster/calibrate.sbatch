@@ -8,7 +8,7 @@
 #SBATCH --exclude=gpu-nvidia-h100
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH -t 02:00:00
+#SBATCH -t 01:00:00
 #SBATCH -o logs/%x-%j.out
 set -euo pipefail
 source "$SLURM_SUBMIT_DIR/env.sh"
