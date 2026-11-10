@@ -17,20 +17,7 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 
 **Pending**
 
-- [ ] **Force-push the rewritten history.** On 2026-11-08 the 10 commits with a
-  `Co-Authored-By: Claude` trailer were rewritten locally without it (files
-  identical; branch now `dffb10530`, tags moved). The force-push was blocked by
-  Claude Code's permissions, so the fork still has the old commits (`c6a27c0c3`).
-  Daniel runs:
-  ```bash
-  git push --force-with-lease=research/sgd-mds:c6a27c0c3 origin research/sgd-mds
-  git push --force origin refs/tags/algorithm-freeze refs/tags/pre-upstream-sync
-  git branch -D tmp-pre-upstream-sync          # after both pushes succeed
-  git update-ref -d refs/original/refs/heads/tmp-pre-upstream-sync
-  git -C "../../SGD for MDS" commit --amend --only -m "Snapshot of the paper sources"
-  ```
-  (The last command is relative to this directory; from the repo root it is
-  `git -C "SGD for MDS" ...`.)
+- [x] Rewritten history (no Claude trailers) force-pushed with both tags, 2026-11-11.
 - [x] Cluster details and job scripts: COMA, spec §13 and `benchmarks/cluster/`.
 - [ ] Ask COMA support the open questions in spec §13 (job time limit, quotas,
   CPU-only use, one exclusive node for calibration).
