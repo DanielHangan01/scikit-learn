@@ -13,7 +13,7 @@
 set -euo pipefail
 source "$SLURM_SUBMIT_DIR/env.sh"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-ROOT="$HOME/sgd-mds/calibration-$SLURM_JOB_ID"
+ROOT="$HOME/sgd-mds-calibration-$SLURM_JOB_ID"
 
 SGDMDS_RESULTS_ROOT="$ROOT/alone" python bench_blocked_kernel.py
 

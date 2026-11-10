@@ -481,9 +481,10 @@ Settled 2026-11-05:
 - `--exclusive` is allowed for benchmarks: used for the microbenchmark and the
   contention calibration only (`cluster/calibrate.sbatch`).
 - **Storage:** home (`/storage/home/<user>`, snapshotted daily and backed up
-  off-site to LRZ) holds the code, the environment and `results_paper`;
-  `~/nobackup` (snapshotted, no off-site backup) holds the datasets and the
-  reference results. Both are NFS on every node.
+  off-site to LRZ) holds the repo (`~/scikit-learn`), Miniforge and the results
+  (`~/sgd-mds-results`); `~/nobackup` (snapshotted, no off-site backup) holds the
+  datasets (`manifold-datasets`, linked as `benchmarks/datasets`) and the laptop's
+  results for comparison (`manifold-results-reference`). Both are NFS on every node.
 - **Software:** Spack modules; Python environments via Miniforge (not Anaconda's
   installer) or venv. Our `environment.yml` uses conda-forge only.
 - **Login node:** no heavy work, and processes die at logout; build inside an

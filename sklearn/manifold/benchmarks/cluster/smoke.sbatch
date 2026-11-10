@@ -12,7 +12,7 @@
 #SBATCH -o logs/%x-%j.out
 set -euo pipefail
 source "$SLURM_SUBMIT_DIR/env.sh"
-export SGDMDS_RESULTS_ROOT="$HOME/sgd-mds/smoke"
+export SGDMDS_RESULTS_ROOT="$HOME/sgd-mds-smoke"
 rm -rf "$SGDMDS_RESULTS_ROOT"
 for i in 1 2 3 4; do python -c "import sklearn.manifold._sgd_mds" & done; wait
 python run_experiment_o.py seismic --seeds 1 --quick
