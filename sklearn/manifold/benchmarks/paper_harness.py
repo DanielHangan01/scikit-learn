@@ -26,6 +26,7 @@ import resource
 import socket
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -46,6 +47,10 @@ from bench_utils import (  # noqa: E402
 from sklearn.manifold import MDS  # noqa: E402
 from sklearn.manifold._sgd_mds import SGDMDS  # noqa: E402
 from sklearn.manifold._squad_mds import squad_mds  # noqa: E402
+
+# Q's torus at N=500 has D=500, so its input is square by coincidence: the
+# estimators then warn about a possibly precomputed matrix on every fit.
+warnings.filterwarnings("ignore", message="The provided input is a square matrix")
 
 RESULTS_ROOT = Path(
     os.environ.get("SGDMDS_RESULTS_ROOT", BENCH_DIR / "results_paper")
