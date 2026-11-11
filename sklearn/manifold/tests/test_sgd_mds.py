@@ -5,6 +5,8 @@ import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 from scipy.stats import chisquare
 
+from scipy.spatial.distance import pdist, squareform
+
 from sklearn.datasets import make_s_curve
 from sklearn.manifold._sgd_mds import SGDMDS
 from sklearn.manifold._sgd_mds_cython import (
@@ -19,7 +21,16 @@ GOLDEN_PATH = Path(__file__).parent / "data_sgd_mds_golden.npz"
 X_S, _ = make_s_curve(200, random_state=0)
 X_G = np.random.RandomState(1).standard_normal((150, 20))
 D_G = euclidean_distances(X_G)
-DATA = {"s_curve": X_S, "gauss20": X_G, "gauss20_distances": D_G}
+# The golden embeddings must not depend on the CPU: BLAS and NumPy's exp round
+# the last digit differently with AVX-512, and SGD amplifies that. So the
+# cycle goldens take distances from pdist, and no golden runs 5 epochs, whose
+# learning-rate schedule hits such an exp.
+DATA = {
+    "s_curve": X_S,
+    "gauss20": X_G,
+    "s_curve_pdist": squareform(pdist(X_S)),
+    "gauss20_pdist": squareform(pdist(X_G)),
+}
 
 # The configurations the golden embeddings were recorded with.
 RANDOM = dict(sampling_strategy="random", max_iter=10, n_updates_per_epoch=20 * 150)
@@ -33,7 +44,7 @@ GOLDEN = {
     ),
     "random_auto": (
         "s_curve",
-        dict(sampling_strategy="random", block_size=2, max_iter=5),
+        dict(sampling_strategy="random", block_size=2, max_iter=10),
     ),
     "blocked_uniform": ("gauss20", dict(RANDOM, block_size=16)),
     "blocked_inverse": ("gauss20", dict(RANDOM, block_size=16, weighting="inverse")),
@@ -42,12 +53,11 @@ GOLDEN = {
         dict(RANDOM, block_size=16, n_updates_per_epoch=20 * 200, metric_mds=False),
     ),
     "blocked_m4": ("gauss20", dict(RANDOM, block_size=4)),
-    "cycle_euclidean": ("gauss20", EXPONENTIAL),
-    "cycle_golden_config": ("gauss20", dict()),
-    "cycle_nonmetric": ("s_curve", dict(EXPONENTIAL, metric_mds=False)),
-    "cycle_precomputed": (
-        "gauss20_distances",
-        dict(EXPONENTIAL, metric="precomputed"),
+    "cycle_exponential": ("gauss20_pdist", dict(EXPONENTIAL, metric="precomputed")),
+    "cycle_golden_config": ("gauss20_pdist", dict(metric="precomputed")),
+    "cycle_nonmetric": (
+        "s_curve_pdist",
+        dict(EXPONENTIAL, metric_mds=False, metric="precomputed"),
     ),
 }
 

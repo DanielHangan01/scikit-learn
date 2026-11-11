@@ -498,6 +498,16 @@ Scripts in `benchmarks/cluster/`: `setup.sh` (one-time), `env.sh`, and the jobs
 order: smoke, calibrate, then O, P and Q with the array throttles (`%8`) set from
 the calibration, e.g. `./submit.sh p.sbatch 4`.
 
+**Bitwise reproducibility is per instruction set.** The H200 nodes have AVX-512
+(AMD Zen 5); the laptop doesn't. OpenBLAS (Cooperlake vs Haswell kernels) and
+NumPy's `exp` then round the last digit differently, and SGD amplifies that: the
+full sweep (distances from BLAS) gives a different, equally good embedding, and
+some learning-rate schedules differ by one ulp. Budgeted and blocked fits on
+identical inputs stay bit-identical. Consequences: all reporting runs happen on the
+cluster, so they are mutually consistent; comparisons with the laptop or VM
+results are statistical for anything touching BLAS; and the golden tests use
+CPU-independent inputs (pdist distances, 10-epoch schedules).
+
 **Job length:** every job is capped at 10 hours (Daniel's practice on COMA).
 Runners resume per fit and P scores at least every 15 minutes of fitting, so a job
 that hits the limit loses at most ~15 minutes plus the fit in flight; the longest
