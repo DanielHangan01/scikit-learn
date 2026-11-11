@@ -2,7 +2,7 @@
 # Experiment Q: one array task per synthetic dataset (3).
 #SBATCH -J sgd-q
 #SBATCH -p compute
-#SBATCH --exclude=gpu-nvidia-h100
+#SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
 #SBATCH -a 0-2
 #SBATCH -c 2
 #SBATCH --hint=nomultithread

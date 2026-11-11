@@ -5,7 +5,7 @@
 # blocks the node's GPUs too, so run it at a quiet time.
 #SBATCH -J sgd-calibrate
 #SBATCH -p compute
-#SBATCH --exclude=gpu-nvidia-h100
+#SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
 #SBATCH --exclusive
 #SBATCH --mem=0
 #SBATCH -t 01:00:00

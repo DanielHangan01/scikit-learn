@@ -3,7 +3,7 @@
 # nodes at once; set it from the calibration.
 #SBATCH -J sgd-o
 #SBATCH -p compute
-#SBATCH --exclude=gpu-nvidia-h100
+#SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
 #SBATCH -a 0-16%8
 #SBATCH -c 2
 #SBATCH --hint=nomultithread

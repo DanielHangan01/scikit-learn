@@ -3,7 +3,7 @@
 # ~84 GB, hence the memory request. cifar10_raw is the longest task.
 #SBATCH -J sgd-p
 #SBATCH -p compute
-#SBATCH --exclude=gpu-nvidia-h100
+#SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
 #SBATCH -a 0-7%8
 #SBATCH -c 4
 #SBATCH --hint=nomultithread

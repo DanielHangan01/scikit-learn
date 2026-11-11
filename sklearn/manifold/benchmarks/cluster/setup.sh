@@ -3,7 +3,7 @@
 # scikit-learn is too heavy for the login node, so run it in an allocation on
 # the nodes the experiments use:
 #
-#   salloc -p compute --exclude=gpu-nvidia-h100 -c 16 --mem=32G -t 02:00:00
+#   salloc -p compute --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3] -c 16 --mem=32G -t 02:00:00
 #   bash sklearn/manifold/benchmarks/cluster/setup.sh [git ref]
 #
 # Without a ref it builds whatever is checked out. The reference results for

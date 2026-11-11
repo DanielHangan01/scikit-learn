@@ -470,16 +470,21 @@ Settled 2026-11-05:
 
 ### The COMA cluster (docs.coma-cluster.de, read 2026-11-11)
 
-- **Slurm, partition `compute`:** one H100 node (2× Intel Xeon Gold 6548N, 64
-  cores, 2 TB) and three H200 nodes `gpu-nvidia-h200-[1-3]` (2× AMD EPYC 9555
-  Turin, 128 cores, 2.3 TB each). **All runs use the H200 nodes only**
-  (`--exclude=gpu-nvidia-h100`), so every timing comes from one CPU model. Other
-  nodes sit in `develop`, which needs a ticket.
+- **Slurm, partition `compute`** (from `sinfo`, 2026-11-11, which differs from the
+  docs): an H100 node (Intel Xeon Gold 6548N); two bare-metal H200 nodes
+  `gpu-nvidia-h200-2` and `-3` (2× AMD EPYC 9555 Turin, 256 hardware threads,
+  2.3 TB each); and three KVM virtual machines `gpu-nvidia-h200-1-studvm-[1-3]`
+  (56 vCPUs, 440–500 GB each) carved out of `gpu-nvidia-h200-1`, which is drained.
+  **All runs use the two bare-metal H200 nodes**
+  (`--exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]`): one CPU model, and
+  no hypervisor or hidden VM neighbours in the timings. Other nodes sit in
+  `develop`, which needs a ticket.
 - **CPU limits are not enforced,** and the nodes are shared with GPU jobs. Every
   run therefore records a canary timing at start and end (`meta.json`,
   `canary_ns_per_pair`); a job with a slow canary ran on a contended node.
 - `--exclusive` is allowed for benchmarks: used for the microbenchmark and the
-  contention calibration only (`cluster/calibrate.sbatch`).
+  contention calibration only (`cluster/calibrate.sbatch`). On a bare-metal node it
+  also blocks 8 H200 GPUs, so run it at a quiet time.
 - **Storage:** home (`/storage/home/<user>`, snapshotted daily and backed up
   off-site to LRZ) holds the repo (`~/scikit-learn`), Miniforge and the results
   (`~/sgd-mds-results`); `~/nobackup` (snapshotted, no off-site backup) holds the

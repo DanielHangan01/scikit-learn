@@ -4,7 +4,7 @@
 # imports of the editable build don't collide.
 #SBATCH -J sgd-smoke
 #SBATCH -p compute
-#SBATCH --exclude=gpu-nvidia-h100
+#SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
 #SBATCH -c 4
 #SBATCH --hint=nomultithread
 #SBATCH --mem=16G
