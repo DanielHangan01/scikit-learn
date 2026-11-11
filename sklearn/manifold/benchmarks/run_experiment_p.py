@@ -13,7 +13,9 @@ so the budget arm reproduces K-optimized's stress. Arms per rung:
 
 Histories are estimated from a fixed sample of 10^7 pairs per (dataset, N);
 every final embedding is also scored exactly, in batches outside the timed
-region, and the estimate's error at the last snapshot is recorded.
+region, and the estimate's error at the last snapshot is recorded. A fit is
+written once its exact score is in, so batches are scored at least every
+SCORE_EVERY_S seconds of fitting.
 
 Set SGDMDS_MAX_MEM_GB to skip full-sweep fits whose estimated peak memory
 exceeds the node's RAM; the dataset then stays incomplete, so a rerun on a
@@ -38,6 +40,7 @@ import run_experiment_k_optimized as KO
 from bench_utils import load_local_dataset
 from run_experiment_m import GRID_K8
 
+EXPERIMENT = "experiment_p"
 DATASETS = KO.DATASETS
 MAX_N = 50_000
 SEEDS = [42, 43, 44, 45, 46]
@@ -50,8 +53,6 @@ SMACOF_INITS = ["random", "classical_mds"]
 SMACOF_SEEDS = [42, 43, 44]
 N_SCORE_PAIRS = 10**7
 SCORE_CHUNK = 16
-# Fits are only written once their exact final score is in, so a job that hits
-# its time limit loses the unscored ones. Score at least this often.
 SCORE_EVERY_S = 900
 MAX_MEM_GB = (float(os.environ["SGDMDS_MAX_MEM_GB"])
               if "SGDMDS_MAX_MEM_GB" in os.environ else None)
@@ -65,32 +66,49 @@ def cycle_peak_gb(n: int) -> float:
     return 36.0 * n * n / 2**30
 
 
-def run_rung(name, X, N, D, rung_seeds, ks, smacof_inits, squad_grid, store,
-             top_rung, n_score_pairs, sub_seed):
+def load_input(name, n_samples):
+    """K-optimized's fixed subsample at this N, and its subsample seed."""
+    X_full, _ = load_local_dataset(name)
+    X_full = np.ascontiguousarray(X_full, dtype=np.float64)
+    if n_samples >= X_full.shape[0]:
+        return X_full, None
+    idx = np.random.RandomState(KO.SUBSAMPLE_SEED).choice(
+        X_full.shape[0], size=n_samples, replace=False)
+    return np.ascontiguousarray(X_full[idx]), KO.SUBSAMPLE_SEED
+
+
+def _subset(wanted, seeds):
+    return [s for s in wanted if s in seeds] or wanted[:1]
+
+
+def arms_for(n_samples, seeds=SEEDS, ks=K_VALUES, smacof_inits=SMACOF_INITS,
+             squad_grid=SQUAD_GRID):
+    """(config id, algo, parameters, seeds) for every arm at this N."""
+    cid, params = H.sgd_config("full", n_samples)
+    arms = [(cid, "sgdmds", params,
+             _subset(FULL_SEEDS.get(n_samples, FULL_SEEDS_DEFAULT), seeds))]
+    for kind in ("budget", "blocked"):
+        for k in H.valid_k(n_samples, ks):
+            cid, params = H.sgd_config(kind, n_samples, k)
+            arms.append((cid, "sgdmds", dict(params, k=k), seeds))
+    arms += [(cid, "squad", p, seeds) for cid, p in H.squad_configs(squad_grid)]
+    if n_samples == SMACOF_N:
+        arms += [(f"smacof-{init}", "smacof", dict(init=init),
+                  _subset(SMACOF_SEEDS, seeds)) for init in smacof_inits]
+    return arms
+
+
+def run_rung(name, X, N, D, sub_seed, arms, store, canary, top_rung,
+             n_score_pairs):
     """All arms at one N. Returns False if a full-sweep fit was memory-skipped."""
     complete = True
     print(f"\n  --- N={N:,}: building the {n_score_pairs:,}-pair scorer ---")
     scorer = H.PairSampleScorer(X, n_pairs=n_score_pairs, seed=0)
-
-    arms = []
-    full_seeds = FULL_SEEDS.get(N, FULL_SEEDS_DEFAULT)
     if MAX_MEM_GB is not None and cycle_peak_gb(N) > MAX_MEM_GB:
         print(f"      full sweep SKIPPED: ~{cycle_peak_gb(N):.0f} GB > "
               f"SGDMDS_MAX_MEM_GB={MAX_MEM_GB:g}")
+        arms = [a for a in arms if a[0] != "full"]
         complete = False
-    else:
-        cid, params = H.sgd_config("full", N)
-        arms.append((cid, "sgdmds", params, [s for s in full_seeds if s in rung_seeds]
-                     or full_seeds[:1]))
-    for kind in ("budget", "blocked"):
-        for k in H.valid_k(N, ks):
-            cid, params = H.sgd_config(kind, N, k)
-            arms.append((cid, "sgdmds", dict(params, k=k), rung_seeds))
-    arms += [(cid, "squad", p, rung_seeds) for cid, p in H.squad_configs(squad_grid)]
-    if N == SMACOF_N:
-        arms += [(f"smacof-{init}", "smacof", dict(init=init),
-                  [s for s in SMACOF_SEEDS if s in rung_seeds] or SMACOF_SEEDS[:1])
-                 for init in smacof_inits]
 
     base = dict(dataset=name, n_samples=N, n_features=D, subsample_seed=sub_seed)
     pending = []
@@ -109,24 +127,13 @@ def run_rung(name, X, N, D, rung_seeds, ks, smacof_inits, squad_grid, store,
         for seed in seeds:
             if store.done(N, cid, seed):
                 continue
-            if algo == "smacof":
-                fit = H.fit_smacof(X, params["init"], seed)
-                fields = dict(init=params["init"], n_iter=300)
-            elif algo == "sgdmds":
-                sgd_params = {k: v for k, v in params.items() if k != "k"}
-                fit = H.fit_sgd(X, sgd_params, seed)
-                fields = dict(k=params.get("k"),
-                              block_size=sgd_params.get("block_size"),
-                              n_updates_per_epoch=sgd_params.get(
-                                  "n_updates_per_epoch"))
-            else:
-                fit = H.fit_squad(X, params, seed)
-                fields = dict(params)
+            timing = canary.maybe_run()
+            fit, fields = H.run_fit(algo, X, params, seed)
             history = H.score_history(fit, scorer)
             fit["snapshots"] = []
             pending.append(dict(fit=fit, history=history, fields=dict(
                 base, algo=algo, config=cid, seed=seed, time_scoring=None,
-                **fields)))
+                **fields, **timing)))
             print(f"    {cid:<36} seed={seed}  {fit['time_fit']:9.2f}s")
             if (len(pending) >= SCORE_CHUNK
                     or sum(p["fit"]["time_fit"] for p in pending) >= SCORE_EVERY_S):
@@ -137,13 +144,15 @@ def run_rung(name, X, N, D, rung_seeds, ks, smacof_inits, squad_grid, store,
 
 def run_dataset(name, seeds, ks, smacof_inits, squad_grid, ladder_override,
                 n_score_pairs, out_root):
-    out_dir = out_root / "experiment_p" / name
+    out_dir = out_root / EXPERIMENT / name
     if H.is_complete(out_dir):
         print(f"Skipping {name} (complete).")
         return
-    X_full, _ = load_local_dataset(name)
-    X_full = np.ascontiguousarray(X_full, dtype=np.float64)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    H.check_provenance(out_dir)
+    X_full, _ = load_input(name, np.inf)
     N_full, D = X_full.shape
+    del X_full
     ladder = ladder_override or [n for n in KO.make_ladder(N_full) if n <= MAX_N]
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
@@ -154,18 +163,15 @@ def run_dataset(name, seeds, ks, smacof_inits, squad_grid, ladder_override,
         dataset_sha256=H.dataset_checksum(name), complete=False))
     print(f"\n=== Experiment P: {name}  N_full={N_full:,}  D={D}  ladder={ladder}"
           f"  ({len(store)} fits on disk) ===")
+    canary = H.Canary(out_dir)
 
     complete = True
     for N in ladder:
-        if N < N_full:
-            idx = np.random.RandomState(KO.SUBSAMPLE_SEED).choice(
-                N_full, size=N, replace=False)
-            X, sub_seed = np.ascontiguousarray(X_full[idx]), KO.SUBSAMPLE_SEED
-        else:
-            X, sub_seed = X_full, None
-        complete &= run_rung(name, X, N, D, seeds, ks, smacof_inits, squad_grid,
-                             store, top_rung=(N == ladder[-1]),
-                             n_score_pairs=n_score_pairs, sub_seed=sub_seed)
+        X, sub_seed = load_input(name, N)
+        arms = arms_for(N, seeds, ks, smacof_inits, squad_grid)
+        complete &= run_rung(name, X, N, D, sub_seed, arms, store, canary,
+                             top_rung=(N == ladder[-1]),
+                             n_score_pairs=n_score_pairs)
     H.write_meta(out_dir, dict(complete=complete and not ladder_override))
     print(f"Saved: {store.csv}")
 

@@ -19,8 +19,9 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 
 - [x] Rewritten history (no Claude trailers) force-pushed with both tags, 2026-11-11.
 - [x] Cluster details and job scripts: COMA, spec §13 and `benchmarks/cluster/`.
-- [ ] Before the campaign: tag the commit to run, rsync data, `setup.sh`, smoke,
-  calibrate.
+- [x] Cluster setup, smoke test and calibration done (2026-11-11; spec §12–§13).
+- [ ] Pilot (`cluster/pilot.sh`), inspect it, then launch O, P and Q with
+  `submit.sh`. Don't `git pull` on the cluster during the campaign.
 - [ ] Paper: add COMA's acknowledgement sentence (spec §13).
 - [ ] Open decision: SQuaD-MDS seed split (spec §13, §14).
 - [ ] Still open from the old queue: the paper's wording on SQuaD-MDS (§2 below).

@@ -4,9 +4,11 @@
 #SBATCH -J sgd-p
 #SBATCH -p compute
 #SBATCH --exclude=gpu-nvidia-h100,gpu-nvidia-h200-1-studvm-[1-3]
-#SBATCH -a 0-7%8
-#SBATCH -c 4
+#SBATCH -a 0-7%4
+#SBATCH -c 8
 #SBATCH --hint=nomultithread
+# 8 cores per job, about one 8-core chiplet: the fit uses one, scoring the rest,
+# and the others keep neighbours off the chiplet's L3 cache and memory link.
 #SBATCH --mem=128G
 #SBATCH -t 10:00:00
 #SBATCH -o logs/%x-%A_%a.out

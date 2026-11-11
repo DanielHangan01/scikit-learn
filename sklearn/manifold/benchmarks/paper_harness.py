@@ -26,6 +26,7 @@ import resource
 import socket
 import subprocess
 import sys
+import time
 import warnings
 from pathlib import Path
 from time import perf_counter
@@ -65,7 +66,9 @@ COLUMNS = [
     "exaggerate_d", "init", "max_step_frac", "n_iter_run", "time_fit",
     "time_snapshots", "time_scoring", "stress_raw", "stress_scaled",
     "scale_alpha", "est_rel_err", "n_snapshots", "clip_frac", "diverged", "host",
+    "t_start", "canary_time", "canary_d8", "canary_d784",
 ]
+CANARY_EVERY_S = 900
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +201,19 @@ def fit_squad(X, params: Dict, seed: int) -> Dict[str, Any]:
                 time_snapshots=rec.overhead, steps=rec.steps, times=rec.times,
                 snapshots=rec.snapshots, n_iter_run=int(info["n_iter"]),
                 clip_frac=info["n_clipped"] / max(info["n_point_steps"], 1))
+
+
+def run_fit(algo: str, X, params: Dict, seed: int) -> Tuple[Dict, Dict]:
+    """One timed fit of an arm; returns (fit, the row fields describing it)."""
+    if algo == "smacof":
+        return (fit_smacof(X, params["init"], seed),
+                dict(init=params["init"], n_iter=300))
+    if algo == "sgdmds":
+        sgd_params = {k: v for k, v in params.items() if k != "k"}
+        return fit_sgd(X, sgd_params, seed), dict(
+            k=params.get("k"), block_size=sgd_params.get("block_size"),
+            n_updates_per_epoch=sgd_params.get("n_updates_per_epoch"))
+    return fit_squad(X, params, seed), dict(params)
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +423,32 @@ def canary_ns_per_pair(n_samples: int = 20_000, reps: int = 3) -> Dict[str, floa
     return out
 
 
+class Canary:
+    """Runs the canary between fits, at most every ``every`` seconds.
+
+    It is never inside a timed region: call ``maybe_run()`` before starting a
+    fit's timer. Each measurement is appended to ``canary.csv``, and the latest
+    one goes into every row, so a fit can be matched to the load around it.
+    """
+
+    def __init__(self, out_dir: Path, every: float = CANARY_EVERY_S):
+        self.path = out_dir / "canary.csv"
+        self.every = every
+        self.last = -np.inf
+        self.values: Dict[str, float] = {}
+
+    def maybe_run(self) -> Dict[str, Any]:
+        if time.time() - self.last >= self.every:
+            ns = canary_ns_per_pair()
+            self.last = time.time()
+            self.values = dict(canary_time=self.last, canary_d8=ns["D8"],
+                               canary_d784=ns["D784"])
+            frame = pd.DataFrame([dict(self.values, host=socket.gethostname())])
+            frame.to_csv(self.path, mode="a", header=not self.path.exists(),
+                         index=False)
+        return dict(self.values, t_start=time.time())
+
+
 def machine_fingerprint() -> Dict[str, Any]:
     import Cython
     import scipy
@@ -451,9 +493,44 @@ def peak_rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
 
 
+def provenance() -> Dict[str, Any]:
+    """What must stay fixed for results to be mixed in one results file."""
+    fp = machine_fingerprint()
+    prov = {k: fp[k] for k in ("git_commit", "python", "numpy", "scipy",
+                               "sklearn", "cython", "cpu_model")}
+    prov["blas"] = [[b["lib"], b["arch"]] for b in fp["blas"]]
+    # In JSON form, so it compares equal to the copy read back from meta.json.
+    return json.loads(json.dumps(prov))
+
+
+def check_provenance(out_dir: Path):
+    """Refuse to add results made by different code or libraries.
+
+    A dataset's results are tied to the provenance of its first run. A resumed
+    run must match it, and no run may start from uncommitted changes. Set
+    SGDMDS_ALLOW_MIXED=1 to override (smoke tests on a development machine).
+    """
+    if os.environ.get("SGDMDS_ALLOW_MIXED") == "1":
+        return
+    if _git("status", "--porcelain", "-uno"):
+        raise SystemExit("Refusing to run: the repository has uncommitted changes "
+                         "(git status). Commit them, or run on a clean checkout.")
+    path = out_dir / "meta.json"
+    if not path.exists():
+        return
+    first = json.loads(path.read_text()).get("provenance")
+    now = provenance()
+    if first is not None and first != now:
+        diff = {k: (first.get(k), now.get(k)) for k in now if first.get(k) != now.get(k)}
+        raise SystemExit(f"Refusing to resume {out_dir}: its results were made with "
+                         f"different code or libraries: {diff}")
+
+
 def write_meta(out_dir: Path, meta: Dict[str, Any]):
     path = out_dir / "meta.json"
     old = json.loads(path.read_text()) if path.exists() else {}
+    if "provenance" not in old:
+        old["provenance"] = provenance()
     runs = old.get("runs", [])
     runs.append(dict(machine_fingerprint(), peak_rss_gb=peak_rss_gb(),
                      complete=meta.get("complete", False)))

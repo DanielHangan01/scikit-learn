@@ -384,6 +384,27 @@ After it:
 
 ## 12. Run order and compute
 
+### Safeguards: no run is in vain
+
+| Risk | Protection |
+|---|---|
+| Other jobs slow a fit | Contention can only change a fit's time, never its result. A canary runs **between** fits at most every 15 min (`canary.csv`, and the latest value in every row). `retime.py` reruns selected fits (`--slow F` by canary, or `--config RE`), checks each computes exactly what the original did, and writes only new times to `retimed.csv` |
+| Job killed (10 h limit, node failure) | Per-fit resume; P scores at least every 15 min of fitting |
+| Code or libraries change mid-campaign | Each dataset's results are tied to the provenance of their first run (git commit, library versions, BLAS kernel, CPU model); a runner refuses to resume under a different one |
+| Running uncommitted code | Refused unless `SGDMDS_ALLOW_MIXED=1` (development smoke tests only) |
+| A bug or a bad setting | `cluster/pilot.sh` first: O on coil20 and epileptic, P on california_housing, Q on torus, at full size. Its results are kept; the full launch skips what it finished |
+
+**Calibration (2026-11-11, exclusive bare-metal node):** 8, 16 and 32 copies of
+the kernel benchmark pinned to consecutive cores ran 1.35×, 1.40× and 1.38×
+slower at the median (worst 1.9–2.5×). The flat curve points at the 8-core
+chiplets: each held 8 memory-bound copies in every case. Hence 8 cores per job
+(`-c 8`, roughly one chiplet), and at most 4 O, 4 P and 2 Q jobs at once (~80
+cores, ~30% of the two nodes). Adjust a running array with
+`scontrol update JobId=<array job> ArrayTaskThrottle=N`. The microbenchmark's
+`cycle` arm (3.6 ns per pair) excludes the per-epoch reshuffle of all pairs, so
+the full sweep's real per-pair cost must come from P's full-sweep fits.
+
+
 | Step | What | Where | Est. core-h | Peak RAM |
 |---|---|---|--:|---|
 | 1 | Harness (§10) | Laptop | — | — |

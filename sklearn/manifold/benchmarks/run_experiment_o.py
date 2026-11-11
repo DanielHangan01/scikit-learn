@@ -14,7 +14,9 @@ every method and seed. Arms:
 scored from snapshots after each fit, SMACOF's comes from its own loop. Final
 embeddings are saved for seed 42.
 
-Per-fit resume; a dataset is skipped once its meta.json says complete.
+Per-fit resume; a dataset is skipped once its meta.json says complete. A
+dataset's results are tied to the code and libraries of its first run (see
+paper_harness.check_provenance).
 
 Usage:
     python run_experiment_o.py                     # all 17 datasets
@@ -34,6 +36,7 @@ from bench_utils import load_local_dataset
 from run_experiment_j import ALL_DATASETS as J_DATASETS
 from run_experiment_m import GRID_J18
 
+EXPERIMENT = "experiment_o"
 DATASETS = [d for d in J_DATASETS if d != "orl"]
 SEEDS = list(range(42, 52))
 K_VALUES = [50, 100, 200, 400]
@@ -46,13 +49,36 @@ QUICK = dict(k=[200], smacof=["random"],
                         init=["pca"], max_step_frac=[4.0]))
 
 
-def run_dataset(name: str, seeds, ks, smacof_inits, squad_grid, out_root):
-    out_dir = out_root / "experiment_o" / name
+def load_input(name, n_samples=None):
+    """The X every arm of a dataset sees, and its subsample seed (none here)."""
+    X, _ = load_local_dataset(name)
+    return np.ascontiguousarray(X, dtype=np.float64), None
+
+
+def arms_for(n_samples, seeds=SEEDS, ks=K_VALUES, smacof_inits=SMACOF_INITS,
+             squad_grid=SQUAD_GRID):
+    """(config id, algo, parameters, seeds) for every arm at this N."""
+    arms = [(f"smacof-{init}", "smacof", dict(init=init), seeds)
+            for init in smacof_inits]
+    cid, params = H.sgd_config("full", n_samples)
+    arms.append((cid, "sgdmds", params, seeds))
+    for kind in ("budget", "blocked"):
+        for k in H.valid_k(n_samples, ks):
+            cid, params = H.sgd_config(kind, n_samples, k)
+            arms.append((cid, "sgdmds", dict(params, k=k), seeds))
+    arms += [(cid, "squad", params, seeds)
+             for cid, params in H.squad_configs(squad_grid)]
+    return arms
+
+
+def run_dataset(name, seeds, ks, smacof_inits, squad_grid, out_root):
+    out_dir = out_root / EXPERIMENT / name
     if H.is_complete(out_dir):
         print(f"Skipping {name} (complete).")
         return
-    X, _ = load_local_dataset(name)
-    X = np.ascontiguousarray(X, dtype=np.float64)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    H.check_provenance(out_dir)
+    X, _ = load_input(name)
     N, D = X.shape
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
@@ -63,39 +89,21 @@ def run_dataset(name: str, seeds, ks, smacof_inits, squad_grid, out_root):
     print(f"\n=== Experiment O: {name}  N={N}  D={D}  "
           f"({len(store)} fits on disk) ===")
     scorer = H.ExactScorer(X)
-
-    arms = [(f"smacof-{init}", "smacof", dict(init=init)) for init in smacof_inits]
-    cid, params = H.sgd_config("full", N)
-    arms.append((cid, "sgdmds", params))
-    for kind in ("budget", "blocked"):
-        for k in H.valid_k(N, ks):
-            cid, params = H.sgd_config(kind, N, k)
-            arms.append((cid, "sgdmds", dict(params, k=k)))
-    arms += [(cid, "squad", params) for cid, params in H.squad_configs(squad_grid)]
+    canary = H.Canary(out_dir)
 
     base = dict(dataset=name, n_samples=N, n_features=D, subsample_seed=None)
-    for cid, algo, params in arms:
-        todo = [s for s in seeds if not store.done(N, cid, s)]
-        if not todo:
-            continue
-        for seed in todo:
-            if algo == "smacof":
-                fit = H.fit_smacof(X, params["init"], seed)
-                fields = dict(init=params["init"], n_iter=300)
-            elif algo == "sgdmds":
-                sgd_params = {k: v for k, v in params.items() if k != "k"}
-                fit = H.fit_sgd(X, sgd_params, seed)
-                fields = dict(k=params.get("k"),
-                              block_size=sgd_params.get("block_size"),
-                              n_updates_per_epoch=sgd_params.get(
-                                  "n_updates_per_epoch"))
-            else:
-                fit = H.fit_squad(X, params, seed)
-                fields = dict(params)
+    for cid, algo, params, arm_seeds in arms_for(N, seeds, ks, smacof_inits,
+                                                 squad_grid):
+        for seed in arm_seeds:
+            if store.done(N, cid, seed):
+                continue
+            timing = canary.maybe_run()
+            fit, fields = H.run_fit(algo, X, params, seed)
             history = H.score_history(fit, scorer)
             final = scorer(fit["embedding"])
             row = H.make_row(fit, history, final, algo=algo, config=cid,
-                             seed=seed, time_scoring=None, **base, **fields)
+                             seed=seed, time_scoring=None, **base, **fields,
+                             **timing)
             store.add(row, history,
                       fit["embedding"] if seed == SAVE_SEED else None)
             print(f"  {cid:<40} seed={seed}  {fit['time_fit']:8.2f}s  "
