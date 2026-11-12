@@ -29,6 +29,10 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 - [ ] Off-machine copy of the paper, raw results and datasets (only a same-disk
   backup exists: `~/research-backups/sgd-mds/backup.sh`). COMA's home directory is
   backed up off-site, so copying the paper and `results/` there would cover it.
+- [ ] Later: classical (or PCA) init for SGDMDS, compared with classical-init
+  SMACOF, whose data the campaign already collects. The main comparison uses
+  random init for both (spec §13). Pilot hint: classical SMACOF reaches
+  1.007–1.023x the full sweep's stress, against 1.05–1.11x with random init.
 - [ ] Later: PCA init for SGDMDS (spec §3); reset `main` to upstream (ask first);
   the PR (RESEARCH_NOTES.md §6).
 

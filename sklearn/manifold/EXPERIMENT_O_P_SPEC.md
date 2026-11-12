@@ -493,6 +493,10 @@ Job scripts wait for the cluster details (§13).
 Settled 2026-11-05:
 
 1. **SMACOF arms:** the default and `classical_mds`, both at `max_iter=300`.
+   **The comparison is random-init SMACOF vs random-init SGDMDS** (decided
+   2026-11-12): same starting point, so it compares the algorithms. The
+   classical-init arm still runs, as data for a later study of classical init for
+   both methods; it isn't part of the main comparison.
 2. **orl:** dropped from O.
 3. **PCA init:** deferred (§3).
 4. **SQuaD-MDS:** no tuning stage; rerun M's grid inside O and P.
