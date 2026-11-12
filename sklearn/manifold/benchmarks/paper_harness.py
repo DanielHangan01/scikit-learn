@@ -203,6 +203,20 @@ def fit_squad(X, params: Dict, seed: int) -> Dict[str, Any]:
                 clip_frac=info["n_clipped"] / max(info["n_point_steps"], 1))
 
 
+def seed_major(arms):
+    """Yield (config id, algo, parameters, seed) seed by seed, every arm per seed.
+
+    Running all arms for one seed before the next spreads every arm over the
+    same stretches of the job, so time ratios between arms aren't skewed by
+    the node's load changing over hours.
+    """
+    seeds = sorted({s for *_, arm_seeds in arms for s in arm_seeds})
+    for seed in seeds:
+        for cid, algo, params, arm_seeds in arms:
+            if seed in arm_seeds:
+                yield cid, algo, params, seed
+
+
 def run_fit(algo: str, X, params: Dict, seed: int) -> Tuple[Dict, Dict]:
     """One timed fit of an arm; returns (fit, the row fields describing it)."""
     if algo == "smacof":

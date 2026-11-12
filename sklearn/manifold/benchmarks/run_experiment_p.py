@@ -5,7 +5,7 @@ The 8 K-optimized sources on the ladder {10k, 20k, 35k, 50k} (california_housing
 stops at its full 20,640), with K-optimized's fixed subsample per (dataset, N),
 so the budget arm reproduces K-optimized's stress. Arms per rung:
 
-  full              SGDMDS(), seed 42 only (42-44 at N=10k); ~36*N^2 bytes
+  full              SGDMDS(), seed 42 only (42-44 at N=10k); ~50*N^2 bytes
   budget-k{k}       k in {100, 200, 400}, block_size=2, seeds 42-46
   blocked-k{k}-m16  the same budget in blocks of 16 points, seeds 42-46
   squad-...         Experiment M's k8 grid (12 configurations), seeds 42-46
@@ -63,7 +63,8 @@ QUICK = dict(k=[200], smacof=["random"],
 
 
 def cycle_peak_gb(n: int) -> float:
-    return 36.0 * n * n / 2**30
+    """Peak memory of a full-sweep fit: 20.9 GB measured at N=20,640 on COMA."""
+    return 50.0 * n * n / 2**30
 
 
 def load_input(name, n_samples):
@@ -123,21 +124,20 @@ def run_rung(name, X, N, D, sub_seed, arms, store, canary, top_rung,
             store.add(row, p["history"], p["fit"]["embedding"] if save else None)
         pending.clear()
 
-    for cid, algo, params, seeds in arms:
-        for seed in seeds:
-            if store.done(N, cid, seed):
-                continue
-            timing = canary.maybe_run()
-            fit, fields = H.run_fit(algo, X, params, seed)
-            history = H.score_history(fit, scorer)
-            fit["snapshots"] = []
-            pending.append(dict(fit=fit, history=history, fields=dict(
-                base, algo=algo, config=cid, seed=seed, time_scoring=None,
-                **fields, **timing)))
-            print(f"    {cid:<36} seed={seed}  {fit['time_fit']:9.2f}s")
-            if (len(pending) >= SCORE_CHUNK
-                    or sum(p["fit"]["time_fit"] for p in pending) >= SCORE_EVERY_S):
-                flush()
+    for cid, algo, params, seed in H.seed_major(arms):
+        if store.done(N, cid, seed):
+            continue
+        timing = canary.maybe_run()
+        fit, fields = H.run_fit(algo, X, params, seed)
+        history = H.score_history(fit, scorer)
+        fit["snapshots"] = []
+        pending.append(dict(fit=fit, history=history, fields=dict(
+            base, algo=algo, config=cid, seed=seed, time_scoring=None,
+            **fields, **timing)))
+        print(f"    {cid:<36} seed={seed}  {fit['time_fit']:9.2f}s")
+        if (len(pending) >= SCORE_CHUNK
+                or sum(p["fit"]["time_fit"] for p in pending) >= SCORE_EVERY_S):
+            flush()
     flush()
     return complete
 
@@ -185,7 +185,7 @@ def main():
         print(f"max N={MAX_N:,}  seeds={SEEDS}  k={K_VALUES}  "
               f"squad configs={len(H.squad_configs(SQUAD_GRID))}  "
               f"SMACOF at N={SMACOF_N:,}")
-        for n in (10_000, 20_000, 35_000, 50_000):
+        for n in (10_000, 20_000, 35_000, 50_000):  # measured ~49 bytes per N^2
             print(f"  full sweep at N={n:,}: ~{cycle_peak_gb(n):.0f} GB")
         return
     quick = opts.get("--quick", False)

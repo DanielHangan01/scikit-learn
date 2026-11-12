@@ -92,22 +92,21 @@ def run_dataset(name, seeds, ks, smacof_inits, squad_grid, out_root):
     canary = H.Canary(out_dir)
 
     base = dict(dataset=name, n_samples=N, n_features=D, subsample_seed=None)
-    for cid, algo, params, arm_seeds in arms_for(N, seeds, ks, smacof_inits,
-                                                 squad_grid):
-        for seed in arm_seeds:
-            if store.done(N, cid, seed):
-                continue
-            timing = canary.maybe_run()
-            fit, fields = H.run_fit(algo, X, params, seed)
-            history = H.score_history(fit, scorer)
-            final = scorer(fit["embedding"])
-            row = H.make_row(fit, history, final, algo=algo, config=cid,
-                             seed=seed, time_scoring=None, **base, **fields,
-                             **timing)
-            store.add(row, history,
-                      fit["embedding"] if seed == SAVE_SEED else None)
-            print(f"  {cid:<40} seed={seed}  {fit['time_fit']:8.2f}s  "
-                  f"stress={final[0]:.6g}")
+    arms = arms_for(N, seeds, ks, smacof_inits, squad_grid)
+    for cid, algo, params, seed in H.seed_major(arms):
+        if store.done(N, cid, seed):
+            continue
+        timing = canary.maybe_run()
+        fit, fields = H.run_fit(algo, X, params, seed)
+        history = H.score_history(fit, scorer)
+        final = scorer(fit["embedding"])
+        row = H.make_row(fit, history, final, algo=algo, config=cid,
+                         seed=seed, time_scoring=None, **base, **fields,
+                         **timing)
+        store.add(row, history,
+                  fit["embedding"] if seed == SAVE_SEED else None)
+        print(f"  {cid:<40} seed={seed}  {fit['time_fit']:8.2f}s  "
+              f"stress={final[0]:.6g}")
 
     H.write_meta(out_dir, dict(complete=True))
     print(f"Saved: {store.csv}")

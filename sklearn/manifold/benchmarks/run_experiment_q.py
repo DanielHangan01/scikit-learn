@@ -74,18 +74,17 @@ def run_dataset(name, n_values, seeds, out_root):
         X, _ = load_input(name, N)
         scorer = H.ExactScorer(X)
         base = dict(dataset=name, n_samples=N, n_features=D, subsample_seed=None)
-        for cid, algo, params, arm_seeds in arms_for(N, seeds):
-            for seed in arm_seeds:
-                if store.done(N, cid, seed):
-                    continue
-                timing = canary.maybe_run()
-                fit, fields = H.run_fit(algo, X, params, seed)
-                history = H.score_history(fit, scorer)
-                final = scorer(fit["embedding"])
-                store.add(H.make_row(fit, history, final, algo=algo, config=cid,
-                                     seed=seed, time_scoring=None, **base,
-                                     **fields, **timing), history)
-            print(f"  N={N:<5} {cid:<18} done")
+        for cid, algo, params, seed in H.seed_major(arms_for(N, seeds)):
+            if store.done(N, cid, seed):
+                continue
+            timing = canary.maybe_run()
+            fit, fields = H.run_fit(algo, X, params, seed)
+            history = H.score_history(fit, scorer)
+            final = scorer(fit["embedding"])
+            store.add(H.make_row(fit, history, final, algo=algo, config=cid,
+                                 seed=seed, time_scoring=None, **base,
+                                 **fields, **timing), history)
+        print(f"  N={N:<5} done")
     H.write_meta(out_dir, dict(complete=n_values == N_VALUES
                                and len(seeds) == N_REPEATS))
     print(f"Saved: {store.csv}")

@@ -394,6 +394,17 @@ After it:
 | Running uncommitted code | Refused unless `SGDMDS_ALLOW_MIXED=1` (development smoke tests only) |
 | A bug or a bad setting | `cluster/pilot.sh` first: O on coil20 and epileptic, P on california_housing, Q on torus, at full size. Its results are kept; the full launch skips what it finished |
 
+**Pilot (2026-11-12, coil20, epileptic, california_housing, torus):** all 5,950
+fits complete, no divergences, one BLAS thread inside fits, snapshot overhead at
+most 3 ms; pair-estimate error median 0.11%, max 0.30%. Reproduction: P budget vs
+K-optimized 1e-13, **P full vs K-optimized 3e-14** (so K-optimized ran on this
+AVX-512 hardware), SQuaD-MDS vs M k8 2.5e-12, vs M j18 2e-14 median (0.2% max,
+since M j18 ran on the laptop). Two changes followed: the full sweep's peak memory
+is ~49 bytes per N² (20.9 GB at N=20,640), so P requests 200 GB; and arms now run
+seed by seed (`seed_major`), so the arms being compared are timed over the same
+stretches of a job. The canary's D=8 value ranged 11.6–19.4 ns, likely boost
+clock varying with node load (D=784 varied only 1.2×).
+
 **Calibration (2026-11-11, exclusive bare-metal node):** 8, 16 and 32 copies of
 the kernel benchmark pinned to consecutive cores ran 1.35×, 1.40× and 1.38×
 slower at the median (worst 1.9–2.5×). The flat curve points at the 8-core
