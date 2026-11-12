@@ -130,7 +130,7 @@ should show that rather than hide it.
 
 ---
 
-## 5. Experiment P: large suite, no SMACOF sweep
+## 5. Experiment P: large suite, without SMACOF
 
 **Data:** the 8 K-optimized sources on the ladder {10k, 20k, 35k, 50k}
 (california_housing: {10k, 20,640}), using K-optimized's fixed subsample
@@ -142,10 +142,11 @@ should show that rather than hide it.
 | Budgeted | k ∈ {100, 200, 400} | 5 |
 | Blocked | Same k | 5 |
 | SQuaD-MDS | M's k8 grid: `n_iter` ∈ {100, …, 4000} × exaggeration, lr 550, PCA init, step cap 4; 12 configs | 5 |
-| **SMACOF bridge** | Default and classical-init arms at N=10k only | 3 |
 
-The bridge turns "SMACOF is too slow here" into a measurement and connects the two
-suites. About 2,800 fits.
+SMACOF runs only on the small suite (decided 2026-11-12): at these sizes it is far
+too slow, and the large suite is about SGDMDS's speedups and SQuaD-MDS. (The
+pilot's california_housing still has 12 SMACOF fits at N=10k from before; the
+analysis ignores them.) About 2,750 fits.
 
 Rungs above 50k are out of scope: there's no full-sweep baseline there.
 
@@ -303,7 +304,6 @@ Provisional: figures get chosen once the data is in.
 | 1. SMACOF vs full SGDMDS | Stress and time table; convergence curves; time to reach SMACOF's stress; seed spread; runtime vs N | O, Q |
 | 2. Budgeting | Overhead and speedup vs N at k=200; small-suite results including where it isn't faster; regime theory; cost model | O, P, §6, J |
 | 3. Point blocking | Trade-off plot of full, budgeted, blocked and SQuaD-MDS; convergence curves; cost per pair vs D | O, P, §6 |
-| Scale limit | SMACOF bridge at N=10k | P |
 
 ---
 

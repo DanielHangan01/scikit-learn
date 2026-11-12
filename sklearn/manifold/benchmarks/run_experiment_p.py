@@ -1,5 +1,5 @@
 """
-Experiment P: the large suite, no SMACOF sweep (EXPERIMENT_O_P_SPEC.md §5).
+Experiment P: the large suite, without SMACOF (EXPERIMENT_O_P_SPEC.md §5).
 
 The 8 K-optimized sources on the ladder {10k, 20k, 35k, 50k} (california_housing
 stops at its full 20,640), with K-optimized's fixed subsample per (dataset, N),
@@ -9,7 +9,9 @@ so the budget arm reproduces K-optimized's stress. Arms per rung:
   budget-k{k}       k in {100, 200, 400}, block_size=2, seeds 42-46
   blocked-k{k}-m16  the same budget in blocks of 16 points, seeds 42-46
   squad-...         Experiment M's k8 grid (12 configurations), seeds 42-46
-  smacof-...        default and classical_mds init, N=10k only, seeds 42-44
+
+SMACOF runs only on the small suite (Experiment O): at these sizes it is far
+too slow, and the large suite is about SGDMDS's speedups and SQuaD-MDS.
 
 Histories are estimated from a fixed sample of 10^7 pairs per (dataset, N);
 every final embedding is also scored exactly, in batches outside the timed
@@ -48,16 +50,13 @@ FULL_SEEDS = {10_000: [42, 43, 44]}
 FULL_SEEDS_DEFAULT = [42]
 K_VALUES = [100, 200, 400]
 SQUAD_GRID = GRID_K8
-SMACOF_N = 10_000
-SMACOF_INITS = ["random", "classical_mds"]
-SMACOF_SEEDS = [42, 43, 44]
 N_SCORE_PAIRS = 10**7
 SCORE_CHUNK = 16
 SCORE_EVERY_S = 900
 MAX_MEM_GB = (float(os.environ["SGDMDS_MAX_MEM_GB"])
               if "SGDMDS_MAX_MEM_GB" in os.environ else None)
 
-QUICK = dict(k=[200], smacof=["random"],
+QUICK = dict(k=[200],
              squad=dict(n_iter=[100], lr=[550.0], exaggerate_d=[False],
                         init=["pca"], max_step_frac=[4.0]))
 
@@ -82,8 +81,7 @@ def _subset(wanted, seeds):
     return [s for s in wanted if s in seeds] or wanted[:1]
 
 
-def arms_for(n_samples, seeds=SEEDS, ks=K_VALUES, smacof_inits=SMACOF_INITS,
-             squad_grid=SQUAD_GRID):
+def arms_for(n_samples, seeds=SEEDS, ks=K_VALUES, squad_grid=SQUAD_GRID):
     """(config id, algo, parameters, seeds) for every arm at this N."""
     cid, params = H.sgd_config("full", n_samples)
     arms = [(cid, "sgdmds", params,
@@ -93,9 +91,6 @@ def arms_for(n_samples, seeds=SEEDS, ks=K_VALUES, smacof_inits=SMACOF_INITS,
             cid, params = H.sgd_config(kind, n_samples, k)
             arms.append((cid, "sgdmds", dict(params, k=k), seeds))
     arms += [(cid, "squad", p, seeds) for cid, p in H.squad_configs(squad_grid)]
-    if n_samples == SMACOF_N:
-        arms += [(f"smacof-{init}", "smacof", dict(init=init),
-                  _subset(SMACOF_SEEDS, seeds)) for init in smacof_inits]
     return arms
 
 
@@ -142,8 +137,8 @@ def run_rung(name, X, N, D, sub_seed, arms, store, canary, top_rung,
     return complete
 
 
-def run_dataset(name, seeds, ks, smacof_inits, squad_grid, ladder_override,
-                n_score_pairs, out_root):
+def run_dataset(name, seeds, ks, squad_grid, ladder_override, n_score_pairs,
+                out_root):
     out_dir = out_root / EXPERIMENT / name
     if H.is_complete(out_dir):
         print(f"Skipping {name} (complete).")
@@ -157,8 +152,7 @@ def run_dataset(name, seeds, ks, smacof_inits, squad_grid, ladder_override,
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
         experiment="P", dataset=name, n_samples=N_full, n_features=D,
-        ladder=ladder, seeds=seeds, k_values=ks, smacof_inits=smacof_inits,
-        squad_grid=squad_grid, n_score_pairs=n_score_pairs,
+        ladder=ladder, seeds=seeds, k_values=ks, squad_grid=squad_grid, n_score_pairs=n_score_pairs,
         subsample_seed=KO.SUBSAMPLE_SEED, max_mem_gb=MAX_MEM_GB,
         dataset_sha256=H.dataset_checksum(name), complete=False))
     print(f"\n=== Experiment P: {name}  N_full={N_full:,}  D={D}  ladder={ladder}"
@@ -168,7 +162,7 @@ def run_dataset(name, seeds, ks, smacof_inits, squad_grid, ladder_override,
     complete = True
     for N in ladder:
         X, sub_seed = load_input(name, N)
-        arms = arms_for(N, seeds, ks, smacof_inits, squad_grid)
+        arms = arms_for(N, seeds, ks, squad_grid)
         complete &= run_rung(name, X, N, D, sub_seed, arms, store, canary,
                              top_rung=(N == ladder[-1]),
                              n_score_pairs=n_score_pairs)
@@ -183,8 +177,7 @@ def main():
     if opts.get("--list"):
         print("Experiment P datasets:", ", ".join(DATASETS))
         print(f"max N={MAX_N:,}  seeds={SEEDS}  k={K_VALUES}  "
-              f"squad configs={len(H.squad_configs(SQUAD_GRID))}  "
-              f"SMACOF at N={SMACOF_N:,}")
+              f"squad configs={len(H.squad_configs(SQUAD_GRID))}")
         for n in (10_000, 20_000, 35_000, 50_000):  # measured ~49 bytes per N^2
             print(f"  full sweep at N={n:,}: ~{cycle_peak_gb(n):.0f} GB")
         return
@@ -194,7 +187,6 @@ def main():
     for name in args or DATASETS:
         run_dataset(name, seeds,
                     QUICK["k"] if quick else K_VALUES,
-                    QUICK["smacof"] if quick else SMACOF_INITS,
                     QUICK["squad"] if quick else SQUAD_GRID,
                     opts.get("--ladder"),
                     opts.get("--score-pairs", N_SCORE_PAIRS),
