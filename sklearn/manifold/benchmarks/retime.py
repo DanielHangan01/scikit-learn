@@ -93,8 +93,11 @@ def main():
             scorer = H.PairSampleScorer(X, n_pairs=meta["n_score_pairs"], seed=0)
         else:
             scorer = H.ExactScorer(X)
+        kwargs = {"seeds": [int(s) for s in rows["seed"]]}
+        if runner is run_experiment_q:
+            kwargs["random_auto"] = True  # so its fits can be re-timed if run
         arms = {cid: (algo, params) for cid, algo, params, _ in runner.arms_for(
-            int(N), **({"seeds": [int(s) for s in rows["seed"]]}))}
+            int(N), **kwargs)}
         for r in rows.itertuples():
             algo, params = arms[r.config]
             timing = canary.maybe_run()

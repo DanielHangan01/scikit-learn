@@ -7,9 +7,15 @@ at N = 500, 1000, ..., 5000, with 10 repeats (seeds 85-94). Arms:
 
   smacof-random     SMACOF's default
   full              SGDMDS(), all pairs per epoch
-  random-auto-m2    random pairs at the full pair budget (B's lazy arm)
   budget-k200       200*N random pairs per epoch, block_size=2
   blocked-k200-m16  the same budget in blocks of 16 points
+
+Off by default: random-auto-m2, random pairs at the full pair budget (B's lazy
+arm). It only separates the cost of computing distances on the fly from the
+saving of a smaller budget, which the microbenchmark already shows. To add it
+later, run with --random-auto into a separate results root, since the dataset
+folders of the main run are complete:
+    SGDMDS_RESULTS_ROOT=~/sgd-mds-results-extra python run_experiment_q.py --random-auto
 
 Same measurement protocol as Experiment O: exact stress histories, single
 thread, per-fit resume, results tied to the code of their first run.
@@ -44,17 +50,19 @@ def load_input(name, n_samples):
     return np.ascontiguousarray(X, dtype=np.float64), None
 
 
-def arms_for(n_samples, seeds=SEEDS):
+def arms_for(n_samples, seeds=SEEDS, random_auto=False):
     """(config id, algo, parameters, seeds) for every arm at this N."""
     arms = [("smacof-random", "smacof", dict(init="random"), seeds)]
-    for kind, k in (("full", None), ("random-auto", None), ("budget", K),
-                    ("blocked", K)):
+    kinds = [("full", None), ("budget", K), ("blocked", K)]
+    if random_auto:
+        kinds.insert(1, ("random-auto", None))
+    for kind, k in kinds:
         cid, params = H.sgd_config(kind, n_samples, k)
         arms.append((cid, "sgdmds", dict(params, k=k), seeds))
     return arms
 
 
-def run_dataset(name, n_values, seeds, out_root):
+def run_dataset(name, n_values, seeds, out_root, random_auto=False):
     out_dir = out_root / EXPERIMENT / name
     if H.is_complete(out_dir):
         print(f"Skipping {name} (complete).")
@@ -65,7 +73,7 @@ def run_dataset(name, n_values, seeds, out_root):
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
         experiment="Q", dataset=name, n_features=D, n_values=n_values,
-        seeds=seeds, k=K, generator=dict(random_state=SEED_BASE, target_dim=D,
+        seeds=seeds, k=K, random_auto=random_auto, generator=dict(random_state=SEED_BASE, target_dim=D,
                                          noise_scale=0.1), complete=False))
     print(f"\n=== Experiment Q: {name}  D={D}  ({len(store)} fits on disk) ===")
     canary = H.Canary(out_dir)
@@ -74,7 +82,8 @@ def run_dataset(name, n_values, seeds, out_root):
         X, _ = load_input(name, N)
         scorer = H.ExactScorer(X)
         base = dict(dataset=name, n_samples=N, n_features=D, subsample_seed=None)
-        for cid, algo, params, seed in H.seed_major(arms_for(N, seeds)):
+        for cid, algo, params, seed in H.seed_major(
+                arms_for(N, seeds, random_auto)):
             if store.done(N, cid, seed):
                 continue
             timing = canary.maybe_run()
@@ -91,12 +100,14 @@ def run_dataset(name, n_values, seeds, out_root):
 
 
 def main():
-    args, opts = H.parse_args(sys.argv[1:], {"--seeds": int, "--n": H.int_list})
+    args, opts = H.parse_args(sys.argv[1:], {"--seeds": int, "--n": H.int_list,
+                                             "--random-auto": bool})
     seeds = SEEDS[: opts.get("--seeds", N_REPEATS)]
     n_values = opts.get("--n", N_VALUES)
     print(f"Results root: {H.RESULTS_ROOT}")
     for name in args or list(DATASETS):
-        run_dataset(name, n_values, seeds, H.RESULTS_ROOT)
+        run_dataset(name, n_values, seeds, H.RESULTS_ROOT,
+                    random_auto=opts.get("--random-auto", False))
 
 
 if __name__ == "__main__":
