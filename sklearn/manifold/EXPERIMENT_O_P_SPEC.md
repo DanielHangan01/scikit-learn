@@ -157,8 +157,13 @@ Rungs above 50k are out of scope: there's no full-sweep baseline there.
 Replaces Experiment B with the same data: `s_curve` (D=100), `swiss_roll` (D=300)
 and `torus` (D=500) at N ∈ {500, 1000, …, 5000}, 10 repeats.
 
-Arms: the SMACOF default arm, full SGDMDS, `sampling_strategy='random'` with the
-full pair budget and `block_size=2` (B's lazy arm), budgeted and blocked at k=200. Same measurement protocol as O. About 1,500 fits.
+Arms: the SMACOF default arm, full SGDMDS, and budgeted and blocked at k=200. Same
+measurement protocol as O. 1,200 fits.
+
+B's lazy arm (random pairs at the full pair budget, computed on the fly) is off
+by default (decided 2026-11-12): no one would choose it, and the cost of
+computing distances on the fly already comes from the microbenchmark. It stays
+runnable with `--random-auto`, into a separate results root.
 
 ---
 
