@@ -20,8 +20,14 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 - [x] Rewritten history (no Claude trailers) force-pushed with both tags, 2026-11-11.
 - [x] Cluster details and job scripts: COMA, spec §13 and `benchmarks/cluster/`.
 - [x] Cluster setup, smoke test and calibration done (2026-11-11; spec §12–§13).
-- [ ] Pilot (`cluster/pilot.sh`), inspect it, then launch O, P and Q with
-  `submit.sh`. Don't `git pull` on the cluster during the campaign.
+- [x] Pilot and campaign: O, P and Q complete (2026-11-17), reproduction checked
+  (spec §12). Timing outliers accepted with a 15% "comparable" rule.
+- [ ] Copy `~/sgd-mds-results` from COMA to `benchmarks/results_paper/`, then the
+  analysis (EXPERIMENT_O_P_Q_RESULTS.md) and figures.
+- [ ] Open issues from the first look: SQuaD-MDS's best setting sits at the top of
+  its `n_iter` ladder almost everywhere (its quality is a bound); choose its setting
+  on seeds 42-46 and report on 47-51 (spec §14); classical-init SMACOF beats full
+  SGDMDS on stress on 9 of 17 small datasets (later study).
 - [ ] Paper: add COMA's acknowledgement sentence (spec §13).
 - [ ] Open decision: SQuaD-MDS seed split (spec §13, §14).
 - [ ] Still open from the old queue: the paper's wording on SQuaD-MDS (§2 below).

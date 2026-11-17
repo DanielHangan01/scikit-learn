@@ -399,6 +399,23 @@ After it:
 | Running uncommitted code | Refused unless `SGDMDS_ALLOW_MIXED=1` (development smoke tests only) |
 | A bug or a bad setting | `cluster/pilot.sh` first: O on coil20 and epileptic, P on california_housing, Q on torus, at full size. Its results are kept; the full launch skips what it finished |
 
+**Campaign (2026-11-12 to 11-17, commit `dc57d0d19`; pilot datasets `5eeb9e04a`):**
+O, P and Q complete, no divergences, one BLAS thread inside every fit. P's full
+sweep peaked at 121.8 GB at N=50k, as predicted. Pair-estimate error at most
+0.47%. Reproduction (`compare_results.py`): P budget vs K-optimized 1.5e-13 max
+(450 fits); P full vs K-optimized 1.8e-4 max (30 fits; K-optimized built its
+distance matrix with multi-threaded BLAS); SQuaD-MDS vs M j18 3e-14 median, 1% max
+(15,300 fits; M ran on the laptop); vs M k8 9e-5 max (1,200 fits).
+
+**Timing outliers are accepted, not rerun** (decided 2026-11-17). The canary at
+D=784 varied about ±7% between datasets; coil20 (pilot) ran ~15% slow throughout,
+and 50 P fits (cifar10_raw, tiny_imagenet at N=50k) sat next to brief slow
+readings, although their own times look typical. A rerun now would run under
+different conditions, so it wouldn't be more comparable. Instead, **any time
+difference under ~15% is reported as "comparable"**, not as a win for either
+method; that affects only near-break-even cases (budget vs full near N≈1,500,
+SMACOF vs SGDMDS on a few small datasets).
+
 **Pilot (2026-11-12, coil20, epileptic, california_housing, torus):** all 5,950
 fits complete, no divergences, one BLAS thread inside fits, snapshot overhead at
 most 3 ms; pair-estimate error median 0.11%, max 0.30%. Reproduction: P budget vs
