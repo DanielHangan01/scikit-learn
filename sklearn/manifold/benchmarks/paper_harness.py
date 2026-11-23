@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import resource
@@ -59,6 +60,7 @@ RESULTS_ROOT = Path(
 REFERENCE_ROOT = Path(
     os.environ.get("SGDMDS_REFERENCE_ROOT", BENCH_DIR / "results")
 )
+EFS_DIR = BENCH_DIR / "external" / "enhanced-force-scheme"
 
 COLUMNS = [
     "dataset", "n_samples", "n_features", "algo", "config", "seed",
@@ -203,6 +205,84 @@ def fit_squad(X, params: Dict, seed: int) -> Dict[str, Any]:
                 clip_frac=info["n_clipped"] / max(info["n_point_steps"], 1))
 
 
+def _efs():
+    """The Enhanced Force-Scheme module, from the pinned submodule."""
+    if str(EFS_DIR) not in sys.path:
+        sys.path.insert(0, str(EFS_DIR))
+    import efs
+
+    return efs
+
+
+def efs_config(kind: str) -> Tuple[str, Dict]:
+    """(config id, parameters) for an EFS arm: the authors' defaults, with
+    ``sample=True`` for s-EFS, which also computes distances on the fly."""
+    params = dict(max_iter=200, learning_rate=1, lr_decay=0.9,
+                  tolerance=1e-5, err_win=10, threads=1)
+    if kind == "full":
+        return "efs", dict(params, sample=False)
+    if kind == "sample":
+        return "efs-sample", dict(params, sample=True)
+    raise ValueError(kind)
+
+
+def _efs_loop(X, seed, max_iter, learning_rate, lr_decay, tolerance, err_win,
+              sample, callback=None):
+    """``efs.EFS._fit`` for ``metric='euclidean'`` and ``comp_dmat='auto'``,
+    with a callback after every iteration. Returns (embedding, n_iter)."""
+    efs = _efs()
+    dmat = None if sample else pdist(X, metric="euclidean")
+    np.random.seed(seed)
+    embedding = np.random.random((X.shape[0], 2))
+    if callback is not None:
+        callback(0, embedding)
+    error = [math.inf] * err_win
+    lr = learning_rate
+    for k in range(max_iter):
+        new_error = efs.move(embedding, lr, sample, seed + k, X, dmat)
+        if callback is not None:
+            callback(k + 1, embedding)
+        if (err_win > 0 and math.fsum([math.fabs(e) for e in error]) / err_win
+                - new_error < tolerance):
+            break
+        error = error[1:] + [new_error]
+        lr *= lr_decay
+    embedding -= np.amin(embedding, axis=0)
+    return embedding, k + 1
+
+
+def efs_warmup():
+    """Compile EFS's numba kernels outside any timed region, and check that
+    ``_efs_loop`` reproduces ``efs.EFS`` bit for bit, in both modes."""
+    efs = _efs()
+    X = np.random.RandomState(0).standard_normal((64, 5))
+    for kind in ("full", "sample"):
+        _, params = efs_config(kind)
+        params = {k: v for k, v in params.items() if k != "threads"}
+        ours, _ = _efs_loop(X, 7, **params)
+        theirs = efs.EFS(random_state=7, **params).fit_transform(X.copy())
+        if not np.array_equal(ours, theirs):
+            raise RuntimeError(f"_efs_loop no longer matches efs.EFS ({kind})")
+
+
+def fit_efs(X, params: Dict, seed: int) -> Dict[str, Any]:
+    """EFS's ``move`` kernel is numba-parallel; ``threads`` sets numba's thread
+    count. Pairs within a round are disjoint, so the result doesn't depend on
+    it. Call ``efs_warmup`` once per process first, or compilation is timed."""
+    import numba
+
+    params = dict(params)
+    numba.set_num_threads(params.pop("threads"))
+    rec = Recorder()
+    with threadpool_limits(1):
+        rec.start()
+        embedding, n_iter = _efs_loop(X, seed, callback=rec, **params)
+        time_fit = rec.stop()
+    return dict(embedding=embedding, time_fit=time_fit,
+                time_snapshots=rec.overhead, steps=rec.steps, times=rec.times,
+                snapshots=rec.snapshots, n_iter_run=int(n_iter))
+
+
 def seed_major(arms):
     """Yield (config id, algo, parameters, seed) seed by seed, every arm per seed.
 
@@ -227,6 +307,9 @@ def run_fit(algo: str, X, params: Dict, seed: int) -> Tuple[Dict, Dict]:
         return fit_sgd(X, sgd_params, seed), dict(
             k=params.get("k"), block_size=sgd_params.get("block_size"),
             n_updates_per_epoch=sgd_params.get("n_updates_per_epoch"))
+    if algo == "efs":
+        return fit_efs(X, params, seed), dict(n_iter=params["max_iter"],
+                                              lr=params["learning_rate"])
     return fit_squad(X, params, seed), dict(params)
 
 
@@ -387,12 +470,28 @@ def make_row(fit: Dict, history: Dict, final: Tuple[float, float, float],
 # Provenance
 # ---------------------------------------------------------------------------
 
-def _git(*args) -> str:
+def _git(*args, cwd: Path = BENCH_DIR) -> str:
     try:
-        return subprocess.run(["git", *args], cwd=BENCH_DIR, capture_output=True,
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
                               text=True, check=True).stdout.strip()
     except Exception:
         return "unknown"
+
+
+def _efs_commit() -> Optional[str]:
+    """The checked-out EFS commit; None if the submodule isn't initialised (an
+    empty folder would otherwise report the parent repository's commit)."""
+    if not (EFS_DIR / "efs.py").exists():
+        return None
+    return _git("rev-parse", "HEAD", cwd=EFS_DIR)
+
+
+def _numba_version() -> Optional[str]:
+    try:
+        import numba
+    except ImportError:
+        return None
+    return numba.__version__
 
 
 def _cpu_model() -> str:
@@ -483,6 +582,8 @@ def machine_fingerprint() -> Dict[str, Any]:
         "scipy": scipy.__version__,
         "sklearn": sklearn.__version__,
         "cython": Cython.__version__,
+        "numba": _numba_version(),
+        "efs_commit": _efs_commit(),
         "blas": [dict(api=d.get("internal_api"), threads=d.get("num_threads"),
                       arch=d.get("architecture"),
                       lib=Path(d.get("filepath", "")).name)
@@ -511,7 +612,8 @@ def provenance() -> Dict[str, Any]:
     """What must stay fixed for results to be mixed in one results file."""
     fp = machine_fingerprint()
     prov = {k: fp[k] for k in ("git_commit", "python", "numpy", "scipy",
-                               "sklearn", "cython", "cpu_model")}
+                               "sklearn", "cython", "numba", "efs_commit",
+                               "cpu_model")}
     prov["blas"] = [[b["lib"], b["arch"]] for b in fp["blas"]]
     # In JSON form, so it compares equal to the copy read back from meta.json.
     return json.loads(json.dumps(prov))

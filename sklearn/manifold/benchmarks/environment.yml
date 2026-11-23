@@ -68,6 +68,8 @@ dependencies:
   - threadpoolctl=3.6
   # --- benchmark / plotting / test deps ---
   - pandas=3.0
+  # Enhanced Force-Scheme (Experiment R, external/enhanced-force-scheme)
+  - numba=0.68
   # matplotlib-base (not `matplotlib`): our plotters only ever call
   # fig.savefig(...), never plt.show() -- the full `matplotlib` package
   # pulls in an entire Qt6/X11 GUI toolkit for interactive backends that a

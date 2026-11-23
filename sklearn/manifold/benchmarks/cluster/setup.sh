@@ -21,6 +21,8 @@ if [ -n "${1:-}" ]; then
     git -C "$REPO" fetch --tags origin
     git -C "$REPO" checkout --detach "$1"
 fi
+# Enhanced Force-Scheme, at the commit this checkout pins (Experiment R).
+git -C "$REPO" submodule update --init
 echo "Building $(git -C "$REPO" log -1 --format='%h %s')"
 
 # Keep an existing dataset link; only create one if there is none.
@@ -44,6 +46,8 @@ conda activate sklearn-dev
 python -c "from sklearn.manifold._sgd_mds_cython import run_sgd_epoch_blocked; \
 from sklearn.manifold._squad_mds_cython import run_squad_iteration; \
 import sklearn; print('build ok', sklearn.__version__)"
+(cd "$REPO/sklearn/manifold/benchmarks" && python -c "import paper_harness as H; \
+H.efs_warmup(); print('efs ok', H._efs_commit())")
 python -m pytest "$REPO/sklearn/manifold/tests/test_sgd_mds.py" -q
 
 SUMS="$HOME/nobackup/manifold-datasets.sha256"

@@ -19,5 +19,8 @@ python run_experiment_o.py seismic --seeds 1 --quick
 python run_experiment_q.py torus --n 500 --seeds 1
 python run_experiment_p.py california_housing --ladder 2000 --seeds 1 --quick \
     --score-pairs 1000000
+python run_experiment_r.py small seismic --seeds 1 --quick --threads 4
+python run_experiment_r.py large california_housing --ladder 2000 --seeds 1 \
+    --quick --score-pairs 1000000
 python bench_blocked_kernel.py --quick
 python compare_results.py
