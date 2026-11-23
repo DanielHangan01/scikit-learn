@@ -6,8 +6,8 @@ full size. Runners don't exist yet; `run_experiment_o.py`,
 `run_experiment_p.py` and `run_experiment_q.py` are the proposed names.
 
 **Prerequisite reading:** [CLAUDE.md](../../CLAUDE.md) §2 (paper storyline),
-[EXPERIMENT_N_RESULTS.md](EXPERIMENT_N_RESULTS.md),
-[EXPERIMENT_M_RESULTS.md](EXPERIMENT_M_RESULTS.md).
+[EXPERIMENT_N_RESULTS.md](https://github.com/DanielHangan01/scikit-learn/blob/research/history/sklearn/manifold/EXPERIMENT_N_RESULTS.md),
+[EXPERIMENT_M_RESULTS.md](https://github.com/DanielHangan01/scikit-learn/blob/research/history/sklearn/manifold/EXPERIMENT_M_RESULTS.md).
 
 ---
 
@@ -97,7 +97,7 @@ against SMACOF as shipped, at its default budget. The paper should say so.
 | T1 | Budget k | k=200 is the headline; the ladder stays for trade-off plots |
 | T2 | Block size m | m=16, sequential updates, random blocks |
 | T3 | PCA init for SGDMDS | **Deferred.** See below |
-| T4 | SQuaD-MDS settings | No separate tuning stage: O and P run Experiment M's grid as configured in `run_experiment_m.py`, and each dataset's best setting is picked from those results afterwards |
+| T4 | SQuaD-MDS settings | No separate tuning stage: O and P run Experiment M's grid, now in `paper_config.py`, and each dataset's best setting is picked from those results afterwards |
 
 **Deferred: PCA init for SGDMDS.** Worth testing later: {random, PCA} × {full,
 budgeted, blocked} on the small suite and 3 large sources at N=10k, 5 seeds, about
@@ -321,7 +321,7 @@ Nothing below is started. It all stays in `sklearn/manifold/`.
 1. `noexcept` on `_pair_update` (was `_lazy_sgd_step`), `xorshift32` and
    `_interp_isotonic`. No `__Pyx_ErrOccurredWithGIL` remains in the generated C.
 2. Research code removed from the estimator: pivot, hybrid, partition, sum and mean
-   updates, `FORCE_BLOCKED_KERNEL`. Pivot selection moved to `_pivot_mds.py`.
+   updates, `FORCE_BLOCKED_KERNEL`. Pivot selection moved to `_pivot_mds.py` (now on `research/history`).
 3. **The random kernel stays,** contrary to the original plan. After the fix it is
    bit-identical to the blocked kernel at m=2 but up to 35% faster at low D, so
    removing it would have slowed the budgeted arm and flattered blocking.

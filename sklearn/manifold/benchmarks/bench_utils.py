@@ -16,12 +16,6 @@ sys.path.insert(0, str(parent_dir.parent.parent))
 from sklearn.manifold import MDS as SMACOF_MDS
 try:
     from sklearn.manifold._sgd_mds import SGDMDS
-    from sklearn.manifold._pivot_mds import (
-        _maybe_pca_project,
-        _resolve_n_pivots,
-        _select_pivots_maxmin,
-        pivot_mds as _pivot_mds_fn,
-    )
 except ImportError:
     print("Could not import SGDMDS from sklearn.manifold._sgd_mds.")
     print("Make sure you are running this from the benchmarks directory.")
@@ -417,117 +411,6 @@ def run_random_budget_benchmark(X, n_updates_per_epoch, random_state=None,
     }
 
 
-def run_pivot_mds_benchmark(X, n_pivots="auto", random_state=None,
-                            pivot_strategy="maxmin", pivot_pca_dim=30,
-                            scoring_block_size=2048, score=True):
-    """
-    Runs standalone Pivot MDS (Brandes & Pich, 2007) — no SGD.
-
-    Spectral baseline: select k pivots, then compute the embedding from a
-    single SVD on the centered N-by-k squared-distance matrix.
-
-    n_pivots: int or 'auto'.
-    pivot_strategy: 'maxmin' (raw farthest-point) or 'maxmin_pca' (farthest-
-        point in a PCA-reduced feature space).
-    pivot_pca_dim: PCA target dim (only used when pivot_strategy='maxmin_pca').
-    """
-    strategy_tag = (
-        "maxmin" if pivot_strategy == "maxmin" else f"pca{pivot_pca_dim}"
-    )
-    k_label = n_pivots if isinstance(n_pivots, str) else f"k{n_pivots}"
-    print(f"  [PivotMDS-{strategy_tag}-{k_label}] Running on N={X.shape[0]}...")
-
-    rng = check_random_state(random_state)
-    n_samples = X.shape[0]
-    k_resolved = _resolve_n_pivots(n_pivots, 2, n_samples)
-
-    X64 = np.ascontiguousarray(X, dtype=np.float64)
-
-    # NOTE: pivot SELECTION is part of the algorithm's cost and must be
-    # timed. Greedy maxmin is O(k*N*D) and single-threaded, so it dominates:
-    # at N=50,000, D=784, k=200 it costs ~15 s against ~0.4 s for the
-    # (BLAS-parallel) spectral solve. An earlier version of this wrapper
-    # started the timer after selection and so under-reported total time by
-    # ~40x. `time` is now the full cost of producing an embedding;
-    # `time_pivot_selection` / `time_spectral` give the split.
-    single_thread = threadpool_limits(1)
-    t_sel0 = time()
-    if pivot_strategy == "maxmin_pca":
-        features_proj = _maybe_pca_project(X64, pivot_pca_dim, rng)
-        pivot_indices = _select_pivots_maxmin(features_proj, k_resolved, rng)
-    else:
-        pivot_indices = _select_pivots_maxmin(X64, k_resolved, rng)
-    selection_time = time() - t_sel0
-
-    t0 = time()
-    embedding, _ = _pivot_mds_fn(
-        X64, pivot_indices, n_components=2, metric="euclidean",
-    )
-    spectral_time = time() - t0
-    total_time = selection_time + spectral_time
-    single_thread.restore_original_limits()
-
-    # Full N(N-1)/2 stress, for direct comparison with SGD results.
-    #
-    # Classical-MDS-family embeddings fit inner products (strain), not
-    # distances, so they come out at a stress-suboptimal global scale.
-    # SGD optimizes scale implicitly while minimizing stress, so an
-    # unscaled comparison overstates the spectral method's stress gap
-    # (by up to ~6x on the H datasets). The embedding is therefore
-    # rescaled by the closed-form stress-optimal factor
-    #     alpha = <D_emb, D> / <D_emb, D_emb>
-    # before stress is computed. The unscaled value is kept as
-    # "stress_raw" for reference.
-    # Computed in one row-blocked pass (O(N * block) memory) so this scales
-    # past N=20,000; the previous full-matrix version needed two N x N
-    # matrices (~40 GB at N=50,000). Scoring happens outside the timed
-    # region above, so `time` is pure solve time.
-    #
-    # score=False returns the UNSCALED embedding and no stress, for callers
-    # that will batch-score many embeddings of the same X together (see
-    # stress_and_optimal_scale_chunked_multi) -- far cheaper when D is large,
-    # since the input-distance blocks are then computed once, not once per fit.
-    if not score:
-        return {
-            "algo": f"PivotMDS-{strategy_tag}-{k_label}",
-            "embedding": embedding,
-            "stress": None,
-            "stress_raw": None,
-            "scale_alpha": None,
-            "history": [(total_time, None)],
-            "time": total_time,
-            "time_pivot_selection": selection_time,
-            "time_spectral": spectral_time,
-            "time_scoring": 0.0,
-            "n_iter": 0,
-            "n_pivots": int(pivot_indices.shape[0]),
-            "pivot_indices": pivot_indices,
-        }
-
-    t_score0 = time()
-    stress, stress_raw, alpha = stress_and_optimal_scale_chunked(
-        X64, embedding, block_size=scoring_block_size
-    )
-    scoring_time = time() - t_score0
-    embedding = embedding * alpha
-
-    return {
-        "algo": f"PivotMDS-{strategy_tag}-{k_label}",
-        "embedding": embedding,
-        "stress": stress,
-        "stress_raw": stress_raw,
-        "scale_alpha": alpha,
-        "history": [(total_time, stress)],
-        "time": total_time,
-        "time_pivot_selection": selection_time,
-        "time_spectral": spectral_time,
-        "time_scoring": scoring_time,
-        "n_iter": 0,
-        "n_pivots": int(pivot_indices.shape[0]),
-        "pivot_indices": pivot_indices,
-    }
-
-
 def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
                             stop_exaggeration=0.6, metric="euclidean",
                             init="pca", momentum=0.0, lr_decay="geometric",
@@ -548,8 +431,8 @@ def run_squad_mds_benchmark(X, n_iter=1000, lr=550.0, exaggerate_d=True,
     method imposes no scale constraint by design (paper §2.2). Scoring raw
     stress on the returned coordinates would measure an arbitrary scale, so
     the closed-form stress-optimal factor alpha = <D_emb,D>/<D_emb,D_emb> is
-    applied first, exactly as for the classical-MDS family in
-    run_pivot_mds_benchmark. `stress` is the rescaled (comparable) number;
+    applied first, exactly as for the classical-MDS family. `stress` is the
+    rescaled (comparable) number;
     `stress_raw` and `scale_alpha` are also returned.
 
     Note this rescale is a WEAKER repair here than for Pivot MDS: SQuaD-MDS

@@ -37,19 +37,18 @@ import sys
 
 import numpy as np
 
+import paper_config as C
 import paper_harness as H
-import run_experiment_k_optimized as KO
 from bench_utils import load_local_dataset
-from run_experiment_m import GRID_K8
 
 EXPERIMENT = "experiment_p"
-DATASETS = KO.DATASETS
+DATASETS = C.LARGE_SUITE
 MAX_N = 50_000
 SEEDS = [42, 43, 44, 45, 46]
 FULL_SEEDS = {10_000: [42, 43, 44]}
 FULL_SEEDS_DEFAULT = [42]
 K_VALUES = [100, 200, 400]
-SQUAD_GRID = GRID_K8
+SQUAD_GRID = C.SQUAD_GRID_LARGE
 N_SCORE_PAIRS = 10**7
 SCORE_CHUNK = 16
 SCORE_EVERY_S = 900
@@ -72,9 +71,9 @@ def load_input(name, n_samples):
     X_full = np.ascontiguousarray(X_full, dtype=np.float64)
     if n_samples >= X_full.shape[0]:
         return X_full, None
-    idx = np.random.RandomState(KO.SUBSAMPLE_SEED).choice(
+    idx = np.random.RandomState(C.SUBSAMPLE_SEED).choice(
         X_full.shape[0], size=n_samples, replace=False)
-    return np.ascontiguousarray(X_full[idx]), KO.SUBSAMPLE_SEED
+    return np.ascontiguousarray(X_full[idx]), C.SUBSAMPLE_SEED
 
 
 def _subset(wanted, seeds):
@@ -148,12 +147,12 @@ def run_dataset(name, seeds, ks, squad_grid, ladder_override, n_score_pairs,
     X_full, _ = load_input(name, np.inf)
     N_full, D = X_full.shape
     del X_full
-    ladder = ladder_override or [n for n in KO.make_ladder(N_full) if n <= MAX_N]
+    ladder = ladder_override or [n for n in C.make_ladder(N_full) if n <= MAX_N]
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
         experiment="P", dataset=name, n_samples=N_full, n_features=D,
         ladder=ladder, seeds=seeds, k_values=ks, squad_grid=squad_grid, n_score_pairs=n_score_pairs,
-        subsample_seed=KO.SUBSAMPLE_SEED, max_mem_gb=MAX_MEM_GB,
+        subsample_seed=C.SUBSAMPLE_SEED, max_mem_gb=MAX_MEM_GB,
         dataset_sha256=H.dataset_checksum(name), complete=False))
     print(f"\n=== Experiment P: {name}  N_full={N_full:,}  D={D}  ladder={ladder}"
           f"  ({len(store)} fits on disk) ===")

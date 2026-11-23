@@ -31,17 +31,16 @@ import sys
 
 import numpy as np
 
+import paper_config as C
 import paper_harness as H
 from bench_utils import load_local_dataset
-from run_experiment_j import ALL_DATASETS as J_DATASETS
-from run_experiment_m import GRID_J18
 
 EXPERIMENT = "experiment_o"
-DATASETS = [d for d in J_DATASETS if d != "orl"]
+DATASETS = C.SMALL_SUITE
 SEEDS = list(range(42, 52))
 K_VALUES = [50, 100, 200, 400]
 SMACOF_INITS = ["random", "classical_mds"]
-SQUAD_GRID = GRID_J18
+SQUAD_GRID = C.SQUAD_GRID_SMALL
 SAVE_SEED = 42
 
 QUICK = dict(k=[200], smacof=["random"],
