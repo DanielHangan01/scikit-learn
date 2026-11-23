@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import sys
 
+import paper_config as C
 import paper_harness as H
-import run_experiment_k_optimized as KO
 import run_experiment_o as O
 import run_experiment_p as P
 
@@ -126,7 +126,7 @@ def run_large(name, seeds, threads, quick, ladder_override, n_score_pairs,
     X_full, _ = P.load_input(name, float("inf"))
     N_full, D = X_full.shape
     del X_full
-    ladder = ladder_override or [n for n in KO.make_ladder(N_full)
+    ladder = ladder_override or [n for n in C.make_ladder(N_full)
                                  if n <= P.MAX_N]
     store = H.ResultStore(out_dir)
     H.write_meta(out_dir, dict(
@@ -134,7 +134,7 @@ def run_large(name, seeds, threads, quick, ladder_override, n_score_pairs,
         ladder=ladder, seeds=seeds, full_efs_n=FULL_EFS_N,
         arms={cid: p for cid, _, p, _ in efs_arms(["full", "sample"], seeds,
                                                   threads, quick)},
-        n_score_pairs=n_score_pairs, subsample_seed=KO.SUBSAMPLE_SEED,
+        n_score_pairs=n_score_pairs, subsample_seed=C.SUBSAMPLE_SEED,
         dataset_sha256=H.dataset_checksum(name), complete=False))
     print(f"\n=== Experiment R (large): {name}  N_full={N_full:,}  D={D}  "
           f"ladder={ladder}  ({len(store)} fits on disk) ===")
