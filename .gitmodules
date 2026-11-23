@@ -1,0 +1,3 @@
+[submodule "sklearn/manifold/benchmarks/external/enhanced-force-scheme"]
+	path = sklearn/manifold/benchmarks/external/enhanced-force-scheme
+	url = https://codeberg.org/jros/enhanced-force-scheme.git
