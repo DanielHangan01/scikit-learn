@@ -22,8 +22,12 @@ extended M, J/L for bank and hiva, re-timing J) are replaced by O, P and Q.
 - [x] Cluster setup, smoke test and calibration done (2026-11-11; spec §12–§13).
 - [x] Pilot and campaign: O, P and Q complete (2026-11-17), reproduction checked
   (spec §12). Timing outliers accepted with a 15% "comparable" rule.
-- [ ] Copy `~/sgd-mds-results` from COMA to `benchmarks/results_paper/`, then the
-  analysis (EXPERIMENT_O_P_Q_RESULTS.md) and figures.
+- [x] Results copied to `benchmarks/results_paper/`; analysis in
+  [EXPERIMENT_O_P_Q_RESULTS.md](EXPERIMENT_O_P_Q_RESULTS.md) (2026-11-18), from
+  `benchmarks/analyze_experiment_o_p_q.py`. Figures still to do (proposed in its §8).
+- [ ] Decisions from the analysis (EXPERIMENT_O_P_Q_RESULTS.md §7): the full
+  sweep's per-epoch shuffle (~95% of its time at large N), scoping step 1 against
+  Q (SMACOF faster above N≈3,500 where it converges early), coil20's timing.
 - [ ] Open issues from the first look: SQuaD-MDS's best setting sits at the top of
   its `n_iter` ladder almost everywhere (its quality is a bound); choose its setting
   on seeds 42-46 and report on 47-51 (spec §14); classical-init SMACOF beats full
