@@ -2,7 +2,7 @@
 SQuaD-MDS (Lambert, de Bodt, Verleysen & Lee, 2022) -- stochastic quartet
 descent MDS.
 
-RESEARCH BASELINE ONLY. Like :mod:`sklearn.manifold._pivot_mds`, this module
+RESEARCH BASELINE ONLY. This module
 exists to give the SGD-MDS work a published point of comparison; it is not
 part of the upstream-facing API and is not exported from ``__init__.py``.
 

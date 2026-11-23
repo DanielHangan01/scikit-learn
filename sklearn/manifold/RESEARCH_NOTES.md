@@ -140,6 +140,10 @@ Runners are `benchmarks/run_experiment_<x>.py`. Raw results are in
 `benchmarks/results/experiment_<x>/<dataset>/{results.csv, meta.json}`;
 `results/README.md` maps each paper element to its data.
 
+The runners, plotters and docs of A–N, and `_pivot_mds.py`, are on the branch
+[`research/history`](https://github.com/DanielHangan01/scikit-learn/blob/research/history/sklearn/manifold/); the file names below refer to it. O, P and Q
+take their suites and grids from `benchmarks/paper_config.py`.
+
 | Exp | Compared | Status / doc |
 |---|---|---|
 | A | SGD-MDS vs SMACOF: quality and runtime | Paper §4.1 |
@@ -168,7 +172,9 @@ Other documents:
 - `REPORT_BUDGETED_SGD_MDS.md`: self-contained supervisor report, current as of
   K-optimized.
 - `PAPER_REVISION_PLAN.md`: paper edits. Parts are outdated; see `STATUS.md` §2.
-- `EXPERIMENT_O_P_SPEC.md`: reporting runs for the paper (O, P, Q). Not yet run.
+- `EXPERIMENT_O_P_SPEC.md`: reporting runs for the paper (O, P, Q), done.
+  Results in `EXPERIMENT_O_P_Q_RESULTS.md`, `EXPERIMENT_O_P_DATASET_TABLES.md`
+  and `PAPER_RESULTS.md`.
 
 ---
 
@@ -263,8 +269,8 @@ The arc:
 
 **Removed from the estimator** in the freeze: `sampling_strategy ∈
 {'pivot','hybrid'}`, `pivot_strategy`, `pivot_pca_dim` and `hybrid_alpha`. To
-reproduce F/G/H, check out the tag `pre-upstream-sync`. `_pivot_mds.py` stays for
-the Pivot MDS baseline.
+reproduce F/G/H, check out the tag `pre-upstream-sync`. `_pivot_mds.py`, the
+Pivot MDS baseline of Experiment L, is on `research/history`.
 
 **One trap worth knowing:** classical-MDS-family embeddings fit inner products,
 not distances, so they land at a stress-suboptimal *scale*. Always apply the
@@ -302,7 +308,7 @@ The final stress is also skipped above the module-level `EXACT_STRESS_N_CAP`
 (default 20,000; a safety guard the K runners raise). BLAS multithreading affects only the
 matrix build and the external scorer, together <1% of a cycle fit when threaded.
 
-### Plotting K-optimized
+### Plotting K-optimized (on `research/history`)
 
 `plot_experiment_k.py` takes `--exp <results-dirname>` (default `experiment_k`):
 
