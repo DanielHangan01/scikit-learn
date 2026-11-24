@@ -149,6 +149,18 @@ def run_large(name, seeds, threads, quick, ladder_override, n_score_pairs,
     print(f"Saved: {store.csv}")
 
 
+def check_threads(threads):
+    """Stop before any fit if numba can't run the requested thread counts."""
+    import numba
+
+    limit = numba.config.NUMBA_NUM_THREADS
+    if threads and max(threads) > limit:
+        raise SystemExit(
+            f"--threads asks for {max(threads)} threads, but numba can use {limit} "
+            "here (the CPUs this process may run on). Under srun, pass "
+            "--cpus-per-task; or lower --threads.")
+
+
 def main():
     args, opts = H.parse_args(sys.argv[1:], {
         "--seeds": int, "--quick": bool, "--list": bool, "--threads": H.int_list,
@@ -167,6 +179,7 @@ def main():
     quick = opts.get("--quick", False)
     threads = opts.get("--threads", THREADS)
     print(f"Results root: {H.RESULTS_ROOT}")
+    check_threads(threads)
     H.efs_warmup()
     if suite == "small":
         seeds = SMALL_SEEDS[: opts.get("--seeds", len(SMALL_SEEDS))]

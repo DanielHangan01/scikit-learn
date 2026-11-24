@@ -17,4 +17,6 @@
 set -euo pipefail
 source "$SLURM_SUBMIT_DIR/env.sh"
 NAME=$(python -c "import run_experiment_p as P; print(P.DATASETS[$SLURM_ARRAY_TASK_ID])")
-srun --cpu-bind=cores python run_experiment_r.py large "$NAME"
+# srun doesn't inherit -c from sbatch: without --cpus-per-task the run gets
+# one core, and the 8-thread EFS arms can't start.
+srun --cpu-bind=cores --cpus-per-task="$SLURM_CPUS_PER_TASK" python run_experiment_r.py large "$NAME"
