@@ -11,6 +11,8 @@ reuses; SMACOF (random init) and blocked SGDMDS at k=200 are shown alongside.
   the arm has lower stress than full or is faster than it.
 - ``r_ttt.csv``: time for each EFS fit to reach 1.01x, 1.05x and 1.10x full's
   final stress, from the histories (P's and R's large ones are estimated).
+- ``comparison.md``: per dataset, mean stress and time of full SGDMDS against
+  full EFS, and of blocked SGDMDS (k=200) against s-EFS, at 1 and 8 threads.
 
 Writes to ``results_paper/analysis_r/``, with ``tables.md``.
 
@@ -18,6 +20,7 @@ Usage:
     python analyze_experiment_r.py
 """
 
+import numpy as np
 import pandas as pd
 
 import analyze_experiment_o_p_q as A
@@ -127,6 +130,87 @@ def render(T):
     return "\n".join(parts)
 
 
+def fmt_seconds(t):
+    if t < 10:
+        return f"{t:.2f} s"
+    return f"{t:.1f} s" if t < 100 else f"{t:,.0f} s"
+
+
+_HISTORIES = {}
+
+
+def histories(exp, root=A.ROOT):
+    """``A.load_histories``, read once per experiment."""
+    if (exp, root) not in _HISTORIES:
+        _HISTORIES[exp, root] = A.load_histories(exp, root)
+    return _HISTORIES[exp, root]
+
+
+def time_ratio_to_higher(ours, efs):
+    """Median over seeds of ours' time ÷ EFS's time to reach a shared level.
+
+    ``ours`` and ``efs`` are the histories of two arms on one (dataset, N).
+    Fits are paired by seed, and each pair's level is the higher of its two
+    final stresses, so both fits reach it.
+    """
+    efs = efs.set_index("seed")
+    ratios = []
+    for h in ours.itertuples():
+        if h.seed not in efs.index:
+            continue
+        e = efs.loc[h.seed]
+        level = max(h.scaled[-1], e.scaled[-1])
+        ratios.append(A.time_to_target(h.time, h.scaled, level)
+                      / A.time_to_target(e.time, e.scaled, level))
+    return float(np.median(ratios)), len(ratios)
+
+
+def paired_table(suite, ours, efs, our_name, efs_name, root=A.ROOT):
+    """Per (dataset, N): mean stress and time of one of our arms and an EFS arm.
+
+    EFS's stress doesn't depend on its thread count, so it is the 1-thread
+    arm's; the times are both arms'. The last column compares the times both
+    take (ours on 1 thread, EFS on 8) to reach a level both reach: per seed, the
+    higher of the two final stresses (``time_ratio_to_higher``). It reads the
+    histories, estimated from P's pair sample on the large suite, for both.
+    """
+    base, r = SUITES[suite]
+    res = pd.concat([A.load_results(base, root), A.load_results(r, root)])
+    hist = pd.concat([histories(base, root), histories(r, root)])
+    m = res.groupby(A.KEY + ["n_features", "config"]).agg(
+        t=("time_fit", "mean"), s=("stress_scaled", "mean")).reset_index()
+    rows = []
+    for (dataset, n, d), g in m.groupby(["dataset", "n_samples", "n_features"]):
+        g = g.set_index("config")
+        if not {ours, efs, f"{efs}-t8"} <= set(g.index):
+            continue
+        o, e, e8 = g.loc[ours], g.loc[efs], g.loc[f"{efs}-t8"]
+        h = hist[(hist.dataset == dataset) & (hist.n_samples == n)]
+        ratio, _ = time_ratio_to_higher(h[h.config == ours],
+                                        h[h.config == f"{efs}-t8"])
+        rows.append({
+            "dataset": dataset, "N": f"{n:,}", "D": f"{d:,}",
+            f"{our_name} stress": f"{o.s:.4g}", f"{efs_name} stress": f"{e.s:.4g}",
+            f"{our_name} / {efs_name} stress": f"{o.s / e.s:.3f}",
+            f"{our_name} time": fmt_seconds(o.t),
+            f"{efs_name} 1t time": fmt_seconds(e.t),
+            f"{efs_name} 8t time": fmt_seconds(e8.t),
+            f"{our_name} / {efs_name} 8t time": f"{o.t / e8.t:.2f}",
+            f"{our_name} / {efs_name} 8t time to the higher stress": f"{ratio:.2f}",
+            "_n": n})
+    out = pd.DataFrame(rows)
+    return out.sort_values(["_n", "dataset"]).drop(columns="_n")
+
+
+def comparison_tables(root=A.ROOT):
+    full = ("full", "efs", "full SGDMDS", "EFS")
+    blocked = ("blocked-k200-m16", "efs-sample", "blocked", "s-EFS")
+    return {"full_small": paired_table("small", *full, root=root),
+            "full_large": paired_table("large", *full, root=root),
+            "blocked_small": paired_table("small", *blocked, root=root),
+            "blocked_large": paired_table("large", *blocked, root=root)}
+
+
 def run(root=A.ROOT):
     out = root / "analysis_r"
     T = {}
@@ -145,6 +229,9 @@ def run(root=A.ROOT):
     for name, table in T.items():
         table.to_csv(out / f"{name}.csv", index=False)
     (out / "tables.md").write_text(render(T))
+    C = comparison_tables(root)
+    (out / "comparison.md").write_text("\n\n".join(
+        f"<!-- {name} -->\n{A.md(table)}" for name, table in C.items()) + "\n")
     print(f"Wrote {out}")
     return T
 
