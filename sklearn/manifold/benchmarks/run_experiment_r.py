@@ -17,6 +17,11 @@ Suites:
   large   P's 8 sources on its ladder, with its fixed subsamples, seeds 42-46:
           efs-sample at every N; efs at N=10,000 only, on seeds 42-44 like P's
           full sweep (one fit at 50k would take hours)
+  epochs  O's 17 datasets, seeds 42-51: full SGDMDS (one thread) at 30, 60, 120
+          and 200 epochs (``full-e{n}``). A control: EFS runs 80-130 iterations
+          to our 30 epochs, so this asks whether its lower stress comes from
+          the extra iterations. More epochs stretch the whole learning-rate
+          schedule (the hybrid switch sits at half of them)
 
 The main arms run on one thread, like every other method. EFS is built for
 threads (its kernel is numba-parallel over the disjoint pairs of a round, so
@@ -29,6 +34,7 @@ P's 10^7-pair sample in large. Results go to ``experiment_r_o/`` and
 
 Usage:
     python run_experiment_r.py small                  # all 17 datasets
+    python run_experiment_r.py epochs coil20          # one dataset
     python run_experiment_r.py large cifar10_raw      # one source
     python run_experiment_r.py small seismic --seeds 1 --quick
     python run_experiment_r.py large california_housing --ladder 2000 --seeds 1 \\
@@ -45,7 +51,10 @@ import paper_harness as H
 import run_experiment_o as O
 import run_experiment_p as P
 
-EXPERIMENTS = {"small": "experiment_r_o", "large": "experiment_r_p"}
+EXPERIMENTS = {"small": "experiment_r_o", "large": "experiment_r_p",
+               "epochs": "experiment_r_epochs"}
+EPOCHS = [30, 60, 120, 200]
+QUICK_EPOCHS = [3, 6]
 SMALL_SEEDS = O.SEEDS
 LARGE_SEEDS = P.SEEDS
 FULL_EFS_N = {10_000: [42, 43, 44]}
@@ -66,6 +75,12 @@ def efs_arms(kinds, seeds, threads=(), quick=False):
     return arms
 
 
+def epoch_arms(seeds, quick=False):
+    """(config id, "sgdmds", parameters, seeds): full SGDMDS per epoch count."""
+    return [(f"full-e{e}", "sgdmds", dict(sampling_strategy="cycle", max_iter=e),
+             seeds) for e in (QUICK_EPOCHS if quick else EPOCHS)]
+
+
 def large_arms(n_samples, seeds, threads, quick):
     """efs-sample at every N; efs only where FULL_EFS_N lists it (on the first
     seed at every N in a quick run)."""
@@ -75,8 +90,9 @@ def large_arms(n_samples, seeds, threads, quick):
     return arms + efs_arms(["sample"], seeds, threads, quick)
 
 
-def run_small(name, seeds, threads, quick, out_root):
-    out_dir = out_root / EXPERIMENTS["small"] / name
+def run_small(name, seeds, arms, suite, out_root):
+    """Every arm on one of O's datasets at full N, scored exactly."""
+    out_dir = out_root / EXPERIMENTS[suite] / name
     if H.is_complete(out_dir):
         print(f"Skipping {name} (complete).")
         return
@@ -85,12 +101,11 @@ def run_small(name, seeds, threads, quick, out_root):
     X, _ = O.load_input(name)
     N, D = X.shape
     store = H.ResultStore(out_dir)
-    arms = efs_arms(["full", "sample"], seeds, threads, quick)
     H.write_meta(out_dir, dict(
-        experiment="R-small", dataset=name, n_samples=N, n_features=D,
+        experiment=f"R-{suite}", dataset=name, n_samples=N, n_features=D,
         seeds=seeds, arms={cid: p for cid, _, p, _ in arms},
         dataset_sha256=H.dataset_checksum(name), complete=False))
-    print(f"\n=== Experiment R (small): {name}  N={N}  D={D}  "
+    print(f"\n=== Experiment R ({suite}): {name}  N={N}  D={D}  "
           f"({len(store)} fits on disk) ===")
     scorer = H.ExactScorer(X)
     canary = H.Canary(out_dir)
@@ -171,20 +186,28 @@ def main():
               f"efs at {FULL_EFS_N}")
         for kind in ("full", "sample"):
             print(" ", *H.efs_config(kind))
+        print("epochs:", [cid for cid, *_ in epoch_arms(SMALL_SEEDS)],
+              f"  seeds={SMALL_SEEDS}")
         return
     if not args or args[0] not in EXPERIMENTS:
-        raise SystemExit("usage: run_experiment_r.py {small,large} [datasets] "
+        raise SystemExit("usage: run_experiment_r.py {small,large,epochs} [datasets] "
                          "(see the docstring)")
     suite, names = args[0], args[1:]
     quick = opts.get("--quick", False)
     threads = opts.get("--threads", THREADS)
     print(f"Results root: {H.RESULTS_ROOT}")
+    if suite == "epochs":
+        seeds = SMALL_SEEDS[: opts.get("--seeds", len(SMALL_SEEDS))]
+        for name in names or O.DATASETS:
+            run_small(name, seeds, epoch_arms(seeds, quick), suite, H.RESULTS_ROOT)
+        return
     check_threads(threads)
     H.efs_warmup()
     if suite == "small":
         seeds = SMALL_SEEDS[: opts.get("--seeds", len(SMALL_SEEDS))]
+        arms = efs_arms(["full", "sample"], seeds, threads, quick)
         for name in names or O.DATASETS:
-            run_small(name, seeds, threads, quick, H.RESULTS_ROOT)
+            run_small(name, seeds, arms, suite, H.RESULTS_ROOT)
     else:
         seeds = LARGE_SEEDS[: opts.get("--seeds", len(LARGE_SEEDS))]
         for name in names or P.DATASETS:

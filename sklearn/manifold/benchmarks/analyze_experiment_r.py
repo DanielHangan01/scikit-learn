@@ -25,7 +25,8 @@ import pandas as pd
 
 import analyze_experiment_o_p_q as A
 
-A.FOLDERS.update(r_o="experiment_r_o", r_p="experiment_r_p")
+A.FOLDERS.update(r_o="experiment_r_o", r_p="experiment_r_p",
+                 r_epochs="experiment_r_epochs")
 SUITES = {"small": ("o", "r_o"), "large": ("p", "r_p")}
 REFERENCE = {"small": ["smacof-random", "blocked-k200-m16"],
              "large": ["blocked-k200-m16"]}
@@ -202,13 +203,51 @@ def paired_table(suite, ours, efs, our_name, efs_name, root=A.ROOT):
     return out.sort_values(["_n", "dataset"]).drop(columns="_n")
 
 
+def epochs_table(root=A.ROOT):
+    """Small suite: full SGDMDS at each epoch count against full EFS.
+
+    Mean stress and time over seeds; stress as ours ÷ EFS's, so below 1 ours is
+    lower. Empty until the ``epochs`` suite of Experiment R has run.
+    """
+    if not list((root / A.FOLDERS["r_epochs"]).glob("*/results.csv")):
+        return pd.DataFrame()
+    res = pd.concat([A.load_results("r_epochs", root), A.load_results("r_o", root)])
+    m = res.groupby(["dataset", "n_samples", "config"]).agg(
+        t=("time_fit", "mean"), s=("stress_scaled", "mean")).reset_index()
+    epochs = sorted({int(c.split("-e")[1]) for c in m.config
+                     if c.startswith("full-e")})
+    rows = []
+    for (dataset, n), g in m.groupby(["dataset", "n_samples"]):
+        g = g.set_index("config")
+        if not {"efs", "efs-t8", *(f"full-e{e}" for e in epochs)} <= set(g.index):
+            continue
+        row = {"dataset": dataset, "N": f"{n:,}", "EFS stress": f"{g.loc['efs'].s:.4g}"}
+        for e in epochs:
+            ratio = g.loc[f"full-e{e}"].s / g.loc["efs"].s
+            row[f"{e} epochs / EFS stress"] = f"{ratio:.3f}"
+        for e in epochs:
+            row[f"{e} epochs time"] = fmt_seconds(g.loc[f"full-e{e}"].t)
+        row["EFS 1t time"] = fmt_seconds(g.loc["efs"].t)
+        row["EFS 8t time"] = fmt_seconds(g.loc["efs-t8"].t)
+        row["_n"] = n
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows, columns=list(rows[0]))
+    return out.sort_values(["_n", "dataset"]).drop(columns="_n")
+
+
 def comparison_tables(root=A.ROOT):
     full = ("full", "efs", "full SGDMDS", "EFS")
     blocked = ("blocked-k200-m16", "efs-sample", "blocked", "s-EFS")
-    return {"full_small": paired_table("small", *full, root=root),
-            "full_large": paired_table("large", *full, root=root),
-            "blocked_small": paired_table("small", *blocked, root=root),
-            "blocked_large": paired_table("large", *blocked, root=root)}
+    tables = {"full_small": paired_table("small", *full, root=root),
+              "full_large": paired_table("large", *full, root=root),
+              "blocked_small": paired_table("small", *blocked, root=root),
+              "blocked_large": paired_table("large", *blocked, root=root)}
+    epochs = epochs_table(root)
+    if not epochs.empty:
+        tables["epochs_small"] = epochs
+    return tables
 
 
 def run(root=A.ROOT):
